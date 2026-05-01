@@ -829,9 +829,6 @@ function renderCard(f) {
             : `<span class="loading-text"><span class="spinner"></span>AI가 공시를 분석하는 중입니다...</span>`
         }
       </div>
-      <div style="margin-top:8px;padding:8px 12px;background:#f1f5f9;border-radius:6px;font-size:11.5px;color:#94a3b8;line-height:1.6;">
-        ⚠️ 본 정보는 투자 권유가 아닌 정보 제공 목적으로만 제공됩니다. AI가 생성한 내용으로 정확하지 않을 수 있으며, 투자 결과에 대한 책임은 전적으로 본인에게 있습니다.
-      </div>
 
       <!-- PRO: 주가 영향 분석 -->
       <div class="section-label">
@@ -849,6 +846,9 @@ function renderCard(f) {
           <div class="lock-desc">주가 영향 분석은 PRO 구독자에게만 제공됩니다. 긍/부정 근거와 단·중·장기 전망을 확인하세요.</div>
           <button class="upgrade-btn" onclick="activatePro()">⚡ PRO 즉시 활성화</button>
         </div>
+      </div>
+      <div style="margin-top:8px;padding:8px 12px;background:#f1f5f9;border-radius:6px;font-size:11.5px;color:#94a3b8;line-height:1.6;">
+        ⚠️ 본 정보는 투자 권유가 아닌 정보 제공 목적으로만 제공됩니다. AI가 생성한 내용으로 정확하지 않을 수 있으며, 투자 결과에 대한 책임은 전적으로 본인에게 있습니다.
       </div>
 
       <!-- PRO: 유사 과거 공시 비교 -->
