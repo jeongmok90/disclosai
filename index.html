@@ -1,0 +1,1176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DisclosAI — 공시 인사이트</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f0f2f5; --card: #ffffff; --sidebar: #0f172a; --sidebar-hover: #1e293b;
+      --accent: #6366f1; --accent2: #818cf8;
+      --positive: #16a34a; --negative: #dc2626; --neutral: #d97706;
+      --text: #1e293b; --muted: #64748b; --border: #e2e8f0;
+      --radius: 12px; --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 16px rgba(0,0,0,.06);
+    }
+    body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    /* TICKER */
+    .ticker-bar { background: #0f172a; color: #e2e8f0; display: flex; align-items: center; height: 36px; font-size: 12px; overflow: hidden; }
+    .ticker-label { background: var(--accent); padding: 0 14px; height: 100%; display: flex; align-items: center; font-weight: 700; letter-spacing: .5px; white-space: nowrap; flex-shrink: 0; }
+    .ticker-track { display: flex; gap: 32px; padding: 0 24px; animation: scroll-left 50s linear infinite; white-space: nowrap; }
+    .ticker-item { display: flex; gap: 8px; align-items: center; }
+    .ticker-item .name { color: #94a3b8; }
+    .ticker-item .val { font-weight: 600; }
+    .up { color: #22c55e; } .dn { color: #f87171; }
+    @keyframes scroll-left { 0%{transform:translateX(0)} 100%{transform:translateX(-50%)} }
+
+    /* HEADER */
+    header { background: var(--card); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 28px; height: 60px; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 0 var(--border); }
+    .logo { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 800; color: var(--accent); }
+    .logo span { color: var(--text); font-weight: 400; font-size: 13px; }
+    .search-wrap { position: relative; }
+    .search-wrap input { width: 320px; padding: 8px 16px 8px 40px; border: 1.5px solid var(--border); border-radius: 24px; font-size: 13px; outline: none; background: var(--bg); transition: border .2s; }
+    .search-wrap input:focus { border-color: var(--accent); background: white; }
+    .search-wrap .icon { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--muted); }
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    .badge-live { background: #fef2f2; color: var(--negative); border: 1px solid #fecaca; border-radius: 20px; padding: 3px 10px; font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 5px; }
+    .badge-live::before { content:''; width:7px;height:7px;border-radius:50%;background:var(--negative);animation:pulse 1.2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.3} }
+
+    /* API 상태 배지 */
+    .api-status { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 6px; }
+    .api-status.live { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+    .api-status.demo { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+    .api-status .dot { width: 6px; height: 6px; border-radius: 50%; }
+    .api-status.live .dot { background: #22c55e; }
+    .api-status.demo .dot { background: #f59e0b; }
+
+    /* LAYOUT */
+    .layout { display: flex; height: calc(100vh - 96px); }
+
+    /* SIDEBAR */
+    aside { width: 220px; flex-shrink: 0; background: var(--sidebar); color: #e2e8f0; padding: 20px 0; overflow-y: auto; }
+    .sidebar-section { padding: 0 16px 16px; }
+    .sidebar-title { font-size: 10px; font-weight: 700; letter-spacing: 1.2px; color: #64748b; text-transform: uppercase; margin-bottom: 8px; }
+    .filter-btn { width: 100%; text-align: left; padding: 9px 12px; border: none; border-radius: 8px; background: transparent; color: #94a3b8; cursor: pointer; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 10px; transition: background .15s, color .15s; margin-bottom: 2px; }
+    .filter-btn:hover { background: var(--sidebar-hover); color: #e2e8f0; }
+    .filter-btn.active { background: var(--accent); color: white; }
+    .filter-btn .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .filter-btn .cnt { margin-left: auto; background: rgba(255,255,255,.1); border-radius: 12px; padding: 1px 7px; font-size: 11px; }
+    .filter-btn.active .cnt { background: rgba(255,255,255,.25); }
+    hr.sep { border: none; border-top: 1px solid #1e293b; margin: 12px 0; }
+
+    /* MAIN */
+    main { flex: 1; overflow-y: auto; padding: 24px 28px; }
+    .tabs { display: flex; gap: 4px; margin-bottom: 20px; background: var(--card); border-radius: 10px; padding: 4px; box-shadow: var(--shadow); width: fit-content; }
+    .tab { padding: 7px 20px; border-radius: 7px; border: none; background: transparent; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); transition: all .2s; }
+    .tab.active { background: var(--accent); color: white; }
+    .tab:hover:not(.active) { background: var(--bg); color: var(--text); }
+
+    /* STATS */
+    .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+    .stat-card { background: var(--card); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); }
+    .stat-card .label { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+    .stat-card .value { font-size: 26px; font-weight: 800; }
+    .stat-card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    /* FILING CARDS */
+    .feed { display: flex; flex-direction: column; gap: 16px; }
+    .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; transition: transform .15s, box-shadow .15s; border: 1.5px solid transparent; }
+    .card:hover { transform: translateY(-1px); box-shadow: 0 4px 24px rgba(0,0,0,.1); }
+    .card.positive { border-color: #bbf7d0; }
+    .card.negative { border-color: #fecaca; }
+    .card.neutral { border-color: #fde68a; }
+    .card.loading-card { border-color: var(--border); animation: cardPulse 1.5s ease-in-out infinite; }
+    @keyframes cardPulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+
+    .card-header { padding: 18px 22px; display: flex; align-items: flex-start; gap: 14px; cursor: pointer; }
+    .company-logo { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 16px; color: white; flex-shrink: 0; }
+    .card-meta { flex: 1; }
+    .card-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+    .company-name { font-size: 15px; font-weight: 700; }
+    .market-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+    .market-badge.kr { background: #eff6ff; color: #2563eb; }
+    .market-badge.us { background: #f0fdf4; color: #15803d; }
+    .filing-type-badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; background: #f1f5f9; color: var(--muted); }
+    .card-time { font-size: 11px; color: var(--muted); margin-left: auto; flex-shrink: 0; }
+    .card-title { font-size: 14px; color: var(--text); font-weight: 500; }
+    .sentiment-pill { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 20px; font-size: 13px; font-weight: 700; flex-shrink: 0; align-self: center; }
+    .sentiment-pill.positive { background: #f0fdf4; color: var(--positive); }
+    .sentiment-pill.negative { background: #fef2f2; color: var(--negative); }
+    .sentiment-pill.neutral { background: #fffbeb; color: var(--neutral); }
+    .sentiment-pill.unknown { background: #f1f5f9; color: var(--muted); }
+    .sentiment-pill .score { font-size: 18px; font-weight: 900; }
+
+    .card-body { padding: 0 22px 22px; display: none; }
+    .card-body.open { display: block; }
+
+    .section-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); margin-bottom: 10px; margin-top: 18px; display: flex; align-items: center; gap: 6px; }
+    .section-label::after { content:''; flex:1; height:1px; background:var(--border); }
+    .section-label .tier-badge { font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; letter-spacing: .3px; }
+    .tier-badge.free { background: #dcfce7; color: #15803d; }
+    .tier-badge.pro { background: linear-gradient(135deg,#6366f1,#8b5cf6); color: white; }
+
+    .ai-summary { background: #f8fafc; border-radius: 10px; padding: 14px 16px; font-size: 13.5px; line-height: 1.8; color: var(--text); border-left: 3px solid var(--accent); }
+    .ai-tag { display: inline-flex; align-items: center; gap: 4px; background: var(--accent); color: white; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-right: 8px; }
+    .loading-text { color: var(--muted); font-style: italic; display: flex; align-items: center; gap: 8px; }
+    .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to{ transform: rotate(360deg); } }
+
+    /* PREMIUM GATE */
+    .premium-gate { position: relative; border-radius: 10px; overflow: hidden; }
+    .premium-preview { pointer-events: none; user-select: none; }
+    .premium-preview .impact-box { opacity: 0.4; filter: blur(3px); }
+    .premium-preview .hist-grid { opacity: 0.4; filter: blur(3px); }
+    .premium-fade { position: absolute; bottom: 0; left: 0; right: 0; height: 70%; background: linear-gradient(to bottom, rgba(255,255,255,0) 0%, rgba(248,250,252,0.97) 55%); pointer-events: none; }
+    .premium-cta {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+      padding: 16px 20px 20px; gap: 8px; text-align: center;
+    }
+    .lock-icon { font-size: 22px; }
+    .lock-title { font-size: 14px; font-weight: 700; color: var(--text); }
+    .lock-desc { font-size: 12px; color: var(--muted); max-width: 300px; line-height: 1.5; }
+    .upgrade-btn { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border: none; border-radius: 8px; padding: 10px 22px; font-size: 13px; font-weight: 700; cursor: pointer; transition: opacity .2s; box-shadow: 0 2px 8px rgba(99,102,241,.35); margin-top: 2px; }
+    .upgrade-btn:hover { opacity: .88; }
+
+    /* IMPACT BOX */
+    .impact-box { border-radius: 10px; padding: 14px 16px; font-size: 13.5px; line-height: 1.75; }
+    .impact-box.positive { background: #f0fdf4; border-left: 3px solid var(--positive); }
+    .impact-box.negative { background: #fef2f2; border-left: 3px solid var(--negative); }
+    .impact-box.neutral  { background: #fffbeb; border-left: 3px solid var(--neutral); }
+    .impact-factors { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .factor-chip { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 20px; background: rgba(0,0,0,.06); }
+
+    /* HISTORICAL */
+    .hist-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .hist-card { border: 1.5px solid var(--border); border-radius: 10px; padding: 14px; }
+    .hist-card-link:hover { border-color: var(--accent); background: #f8f7ff; transition: border-color .15s, background .15s; }
+    .hist-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+    .hist-company { font-size: 13px; font-weight: 700; }
+    .hist-date { font-size: 11px; color: var(--muted); }
+    .hist-desc { font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+    .hist-result { display: flex; align-items: center; justify-content: space-between; }
+    .price-change { font-size: 20px; font-weight: 900; }
+    .price-change.up { color: var(--positive); }
+    .price-change.dn { color: var(--negative); }
+    .sim-score { font-size: 11px; color: var(--muted); text-align: right; }
+    .sim-bar-wrap { height: 4px; background: var(--border); border-radius: 2px; margin-top: 3px; width: 80px; margin-left: auto; }
+    .sim-bar { height: 100%; border-radius: 2px; background: var(--accent); }
+
+    /* CHART */
+    .chart-wrap { background: #f8fafc; border-radius: 10px; padding: 16px; }
+    .chart-title-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+    .chart-title { font-size: 13px; font-weight: 700; color: var(--text); }
+    .chart-subtitle { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .chart-last-val { text-align: right; }
+    .chart-last-val .val { font-size: 18px; font-weight: 800; }
+    .chart-last-val .chg { font-size: 11px; font-weight: 600; }
+    canvas.sparkline { max-height: 80px; }
+
+    /* EXPAND HINT */
+    .expand-hint { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; padding: 10px 22px; cursor: pointer; background: transparent; width: 100%; border: none; border-top: 1px solid var(--border); }
+    .expand-hint:hover { background: var(--bg); }
+    .expand-hint .chevron { transition: transform .2s; font-size: 14px; margin-left: auto; }
+    .expand-hint .chevron.open { transform: rotate(180deg); }
+
+    /* EMPTY / ERROR */
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--muted); }
+    .info-banner { background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px; padding: 14px 18px; font-size: 13px; color: #92400e; margin-bottom: 20px; display: flex; align-items: flex-start; gap: 10px; line-height: 1.6; }
+    .info-banner code { background: #fef3c7; padding: 1px 6px; border-radius: 4px; font-size: 12px; font-family: monospace; }
+
+    /* UPGRADE MODAL */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 1000; display: none; align-items: center; justify-content: center; }
+    .modal-backdrop.open { display: flex; }
+    .modal { background: white; border-radius: 20px; padding: 40px; max-width: 440px; width: 90%; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
+    .modal-icon { font-size: 48px; margin-bottom: 16px; }
+    .modal-title { font-size: 22px; font-weight: 800; margin-bottom: 8px; }
+    .modal-desc { color: var(--muted); font-size: 14px; line-height: 1.7; margin-bottom: 28px; }
+    .modal-features { background: #f8fafc; border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; text-align: left; }
+    .modal-features li { font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: flex-start; }
+    .modal-features li:last-child { border-bottom: none; }
+    .modal-features li::before { content: '✓'; color: var(--positive); font-weight: 800; flex-shrink: 0; }
+    .modal-price { font-size: 28px; font-weight: 900; color: var(--accent); margin-bottom: 4px; }
+    .modal-price-sub { font-size: 12px; color: var(--muted); margin-bottom: 20px; }
+    .modal-btn { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border: none; border-radius: 10px; padding: 14px 32px; font-size: 15px; font-weight: 700; cursor: pointer; width: 100%; margin-bottom: 10px; }
+    .modal-close { background: none; border: none; color: var(--muted); font-size: 13px; cursor: pointer; padding: 8px; }
+
+    /* TOAST */
+    .toast { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(20px); background: #1e293b; color: white; padding: 12px 24px; border-radius: 40px; font-size: 13px; font-weight: 600; z-index: 2000; opacity: 0; transition: opacity .3s, transform .3s; pointer-events: none; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.pro-toast { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+
+    /* PRO ACTIVATED: 잠금 없이 내용 표시 */
+    body.pro-active .premium-gate .premium-fade,
+    body.pro-active .premium-gate .premium-cta { display: none !important; }
+    body.pro-active .premium-gate .premium-preview { pointer-events: auto; user-select: auto; }
+    body.pro-active .premium-gate .premium-preview .impact-box,
+    body.pro-active .premium-gate .premium-preview .hist-grid { opacity: 1; filter: none; }
+
+    /* SOURCE LINK */
+    .source-link { font-size: 11px; color: var(--accent); text-decoration: none; font-weight: 600; padding: 3px 9px; border: 1.5px solid var(--accent); border-radius: 5px; white-space: nowrap; transition: all .15s; flex-shrink: 0; }
+    .source-link:hover { background: var(--accent); color: white; }
+    .source-btn { display: inline-flex; align-items: center; gap: 6px; margin-top: 20px; padding: 10px 20px; border: 1.5px solid var(--accent); border-radius: 8px; color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 700; transition: all .15s; }
+    .source-btn:hover { background: var(--accent); color: white; }
+
+    /* PAGINATION */
+    #pagination { display: flex; align-items: center; justify-content: space-between; padding: 20px 0 8px; flex-wrap: wrap; gap: 10px; }
+    .pag-info { font-size: 12px; color: var(--muted); }
+    .pag-btns { display: flex; gap: 4px; align-items: center; }
+    .pag-btn { padding: 6px 12px; border: 1.5px solid var(--border); background: var(--card); border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--text); transition: all .15s; font-weight: 500; }
+    .pag-btn:hover:not(:disabled):not(.active) { border-color: var(--accent); color: var(--accent); }
+    .pag-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+    .pag-btn:disabled { opacity: .4; cursor: default; }
+    .pag-ellipsis { font-size: 13px; color: var(--muted); padding: 0 2px; }
+
+    @media(max-width:900px){aside{display:none}.stats-row{grid-template-columns:repeat(2,1fr)}.hist-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+
+<!-- TICKER -->
+<div class="ticker-bar">
+  <div class="ticker-label">LIVE</div>
+  <div style="overflow:hidden;flex:1"><div class="ticker-track" id="ticker"></div></div>
+</div>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">
+    <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+      <rect width="28" height="28" rx="7" fill="#6366f1"/>
+      <path d="M7 9h14M7 14h10M7 19h12" stroke="white" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="21" cy="19" r="4" fill="#22c55e" stroke="white" stroke-width="1.5"/>
+    </svg>
+    DisclosAI <span>공시 인사이트</span>
+  </div>
+  <div class="search-wrap">
+    <span class="icon">🔍</span>
+    <input type="text" placeholder="기업명, 종목코드, 공시 유형 검색..." id="searchInput" />
+  </div>
+  <div class="header-right">
+    <div class="api-status demo" id="apiStatusBadge">
+      <div class="dot"></div><span id="apiStatusText">데모 모드</span>
+    </div>
+    <div class="badge-live">LIVE</div>
+    <button id="headerProBtn" class="upgrade-btn" style="font-size:12px;padding:7px 14px;" onclick="activatePro()">⚡ PRO 활성화</button>
+  </div>
+</header>
+
+<!-- LAYOUT -->
+<div class="layout">
+  <aside>
+    <div class="sidebar-section">
+      <div class="sidebar-title">마켓</div>
+      <button class="filter-btn active" onclick="filterMarket('all',this)">🌐 전체 <span class="cnt" id="cnt-all">—</span></button>
+      <button class="filter-btn" onclick="filterMarket('kr',this)">🇰🇷 국내 (DART) <span class="cnt" id="cnt-kr">—</span></button>
+      <button class="filter-btn" onclick="filterMarket('us',this)">🇺🇸 미국 (EDGAR) <span class="cnt" id="cnt-us">—</span></button>
+    </div>
+    <hr class="sep">
+    <div class="sidebar-section">
+      <div class="sidebar-title">감성 필터</div>
+      <button class="filter-btn" onclick="filterSentiment('positive',this)"><span class="dot" style="background:#22c55e"></span>긍정적 <span class="cnt" id="cnt-pos">—</span></button>
+      <button class="filter-btn" onclick="filterSentiment('negative',this)"><span class="dot" style="background:#f87171"></span>부정적 <span class="cnt" id="cnt-neg">—</span></button>
+      <button class="filter-btn" onclick="filterSentiment('neutral',this)"><span class="dot" style="background:#fbbf24"></span>중립 <span class="cnt" id="cnt-neu">—</span></button>
+    </div>
+    <hr class="sep">
+    <div class="sidebar-section">
+      <div class="sidebar-title">공시 유형</div>
+      <button class="filter-btn" onclick="filterType('실적',this)">📊 실적 공시</button>
+      <button class="filter-btn" onclick="filterType('투자',this)">💰 투자·M&A</button>
+      <button class="filter-btn" onclick="filterType('인사',this)">👤 임원·인사</button>
+      <button class="filter-btn" onclick="filterType('자본',this)">📈 자본 변동</button>
+      <button class="filter-btn" onclick="filterType('기타',this)">📋 기타 공시</button>
+    </div>
+    <hr class="sep">
+    <div class="sidebar-section">
+      <div class="sidebar-title">관심 종목</div>
+      <button class="filter-btn">⭐ 삼성전자</button>
+      <button class="filter-btn">⭐ NVIDIA</button>
+      <button class="filter-btn">⭐ SK하이닉스</button>
+    </div>
+  </aside>
+
+  <main>
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('today',this)">오늘 공시</button>
+      <button class="tab" onclick="switchTab('watchlist',this)">관심 목록</button>
+    </div>
+
+    <div id="apiBanner" class="info-banner" style="display:none">
+      ⚠️ <div><strong>데모 모드로 실행 중입니다.</strong> 실시간 공시와 AI 분석을 사용하려면:<br>
+      1. <code>cp .env.example .env</code> 후 API 키 입력<br>
+      2. <code>npm install &amp;&amp; npm start</code> 로 서버 실행<br>
+      3. <code>http://localhost:3000</code> 으로 접속</div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-card"><div class="label">오늘 공시 수</div><div class="value" id="stat-total">—</div><div class="sub" id="stat-time">로딩 중...</div></div>
+      <div class="stat-card"><div class="label">긍정 공시</div><div class="value" style="color:var(--positive)" id="stat-pos">—</div><div class="sub">AI 분석 기준</div></div>
+      <div class="stat-card"><div class="label">부정 공시</div><div class="value" style="color:var(--negative)" id="stat-neg">—</div><div class="sub">AI 분석 기준</div></div>
+    </div>
+
+    <div class="feed" id="feed"></div>
+    <div id="pagination"></div>
+  </main>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<!-- 업그레이드 모달 -->
+<div class="modal-backdrop" id="modal">
+  <div class="modal">
+    <div class="modal-icon">⚡</div>
+    <div class="modal-title">PRO로 업그레이드</div>
+    <div class="modal-desc">AI 요약은 무료로 제공됩니다.<br>아래 PRO 기능으로 투자 인사이트를 극대화하세요.</div>
+    <ul class="modal-features">
+      <li>주가 영향 분석 — 긍/부정 근거와 단·중·장기 전망</li>
+      <li>유사 과거 공시 비교 — 과거 등락률 데이터 매칭</li>
+      <li>분기별 핵심 지표 추이 차트</li>
+      <li>관심 종목 실시간 알림 (푸시/이메일)</li>
+      <li>월 최대 500건 무제한 조회</li>
+    </ul>
+    <div class="modal-price">월 9,900원</div>
+    <div class="modal-price-sub">연간 구독 시 월 7,900원 (20% 할인)</div>
+    <button class="modal-btn" onclick="activatePro();closeModal()">⚡ PRO 즉시 활성화하기</button>
+    <button class="modal-close" onclick="closeModal()">나중에 하기</button>
+  </div>
+</div>
+
+<script>
+// ── 티커 ──────────────────────────────────────────────────────────────────
+const TICKERS=[
+  {name:'KOSPI',val:'2,614.32',chg:'+12.45',up:true},
+  {name:'KOSDAQ',val:'742.18',chg:'-3.21',up:false},
+  {name:'S&P 500',val:'5,482.10',chg:'+28.74',up:true},
+  {name:'NASDAQ',val:'17,524.36',chg:'+94.12',up:true},
+  {name:'DOW',val:'40,213.08',chg:'-45.20',up:false},
+  {name:'USD/KRW',val:'1,382.50',chg:'+2.10',up:false},
+  {name:'삼성전자',val:'₩69,400',chg:'-1,200',up:false},
+  {name:'SK하이닉스',val:'₩192,000',chg:'+7,500',up:true},
+  {name:'NVDA',val:'$874.20',chg:'+38.40',up:true},
+  {name:'AAPL',val:'$191.50',chg:'-9.30',up:false},
+  {name:'TSLA',val:'$247.80',chg:'+14.60',up:true},
+  {name:'WTI',val:'$71.43',chg:'-0.85',up:false},
+];
+(function buildTicker(){
+  const t=document.getElementById('ticker');
+  const items=[...TICKERS,...TICKERS];
+  t.innerHTML=items.map(x=>`<div class="ticker-item"><span class="name">${x.name}</span><span class="val">${x.val}</span><span class="${x.up?'up':'dn'}">${x.up?'▲':'▼'} ${x.chg}</span></div>`).join('');
+})();
+
+// ── 데모 데이터 (국내/미국 공시 한국어 통합) ──────────────────────────────
+const DEMO_FILINGS = [
+  {
+    id:1, market:'kr', source:'dart',
+    company:'삼성전자', ticker:'005930', color:'#1428a0',
+    type:'실적', typeBadge:'Q1 영업실적 공시', time:'09:12',
+    title:'2026년 1분기 영업실적(잠정) 공시',
+    sentiment:'negative', score:-72,
+    summary:`삼성전자가 2026년 1분기 영업이익을 <strong>4조 6,000억원</strong>으로 발표했습니다. 이는 전년 동기(5조 9,000억원) 대비 <strong>22% 감소</strong>한 수치로, 시장 컨센서스(5조 2,000억원)를 11.5% 하회했습니다. 반도체(DS) 부문 영업이익이 2조 1,000억원으로 전분기 대비 31% 급감했으며, HBM 납품 단가 하락과 레거시 D램 재고 증가가 주요 원인입니다.`,
+    impact:`<strong>단기 주가에 하방 압력이 예상됩니다.</strong> 컨센서스를 11.5% 하회하는 어닝 쇼크 수준으로, 외국인 매물 출회와 함께 단기 조정이 불가피합니다. 다만 2분기부터 HBM4 본격 출하가 예정되어 낙폭은 제한적일 수 있습니다.`,
+    factors:['어닝쇼크', 'HBM 단가 하락', '레거시 재고', '컨센서스 -11.5%'],
+    historical:[
+      {company:'삼성전자',date:'2023-04-07',desc:'2023 Q1 실적 — 영업이익 6,402억 (전년비 -96%)',change:-5.3,sim:91},
+      {company:'삼성전자',date:'2024-01-09',desc:'2023 Q4 실적 하회, 반도체 적자 지속 공시',change:-3.1,sim:84},
+    ],
+    chartTitle:'분기별 영업이익 추이',
+    chartUnit:'조원',
+    chartPeriods:['24Q3','24Q4','25Q1','25Q2','25Q3','25Q4','26Q1'],
+    spark:[5.9,5.7,5.4,5.6,5.2,4.8,4.6],
+  },
+  {
+    id:2, market:'kr', source:'dart',
+    company:'SK하이닉스', ticker:'000660', color:'#ee2023',
+    type:'투자', typeBadge:'주요사항 보고', time:'10:05',
+    title:'HBM4 생산라인 증설 투자 결정 (3조 4,000억원)',
+    sentiment:'positive', score:85,
+    summary:`SK하이닉스가 이천 M16 팹에 HBM4(6세대 High Bandwidth Memory) 전용 생산라인 증설을 위해 총 <strong>3조 4,000억원</strong>을 투자한다고 공시했습니다. 투자는 2026년 2분기부터 2028년 1분기까지 단계적으로 집행되며, 완공 시 HBM4 월 생산능력을 현재의 <strong>2.3배</strong>로 끌어올릴 계획입니다. NVIDIA, Microsoft 등 AI 하이퍼스케일러로부터 장기 공급계약을 확보한 것이 투자 결정의 배경입니다.`,
+    impact:`<strong>중장기적으로 강력한 주가 상승 동인으로 작용할 전망입니다.</strong> AI 인프라 투자 사이클이 지속되는 가운데 HBM 시장 과점적 지위를 확대하는 공시입니다. NVIDIA B300 시리즈 탑재 HBM4 선점 효과로 2027년 영업이익 35% 이상 성장이 기대됩니다.`,
+    factors:['HBM4 선점', 'AI 수요 확대', 'NVIDIA 장기계약', '생산능력 2.3배'],
+    historical:[
+      {company:'SK하이닉스',date:'2024-08-14',desc:'HBM3E 양산 및 NVIDIA 독점 공급 계약 공시',change:+8.7,sim:93},
+      {company:'삼성전자',date:'2025-03-21',desc:'HBM4 투자계획 및 파운드리 2나노 투자 공시',change:+4.2,sim:78},
+    ],
+    chartTitle:'분기별 영업이익 추이',
+    chartUnit:'조원',
+    chartPeriods:['24Q3','24Q4','25Q1','25Q2','25Q3','25Q4','26Q1'],
+    spark:[3.2,4.1,4.8,5.6,6.1,7.2,8.4],
+  },
+  {
+    id:3, market:'kr', source:'dart',
+    company:'카카오', ticker:'035720', color:'#FFCD00',
+    type:'인사', typeBadge:'임원 변경', time:'11:30',
+    title:'대표이사 변경 — 정신아 대표 사임, 신임 CEO 선임',
+    sentiment:'neutral', score:-12,
+    summary:`카카오가 정신아 대표이사의 사임과 함께 전 카카오페이 CTO 출신 박준규 씨를 신임 대표이사로 선임한다고 공시했습니다. 박준규 신임 대표는 AI 및 핀테크 전문가로, 카카오의 AI 사업 재편을 주도할 예정입니다. 이사회 결의는 <strong>2026년 5월 1일</strong> 예정이며, 정식 취임은 정기주총 이후입니다.`,
+    impact:`경영진 교체에 따른 단기 불확실성이 존재하나, AI 전문가 영입으로 중장기 사업 방향성은 긍정적입니다. 전임 대표의 법적 리스크 해소 여부를 모니터링할 필요가 있습니다.`,
+    factors:['경영진 교체', 'AI 전문가 영입', '단기 불확실성', '법적 리스크'],
+    historical:[
+      {company:'카카오',date:'2023-11-15',desc:'김범수 의장 구속 후 대표이사 교체 공시',change:-7.4,sim:71},
+      {company:'네이버',date:'2024-03-08',desc:'최수연 대표 연임 및 AI 조직개편 공시',change:+2.3,sim:62},
+    ],
+    chartTitle:'분기별 영업이익 추이',
+    chartUnit:'백억원',
+    chartPeriods:['24Q3','24Q4','25Q1','25Q2','25Q3','25Q4','26Q1'],
+    spark:[520,480,510,490,530,500,480],
+  },
+  {
+    id:4, market:'kr', source:'dart',
+    company:'현대차', ticker:'005380', color:'#002c5f',
+    type:'자본', typeBadge:'주요사항 보고', time:'14:22',
+    title:'자기주식 취득 신탁계약 체결 (5,000억원 규모)',
+    sentiment:'positive', score:61,
+    summary:`현대자동차가 주주가치 제고를 위해 총 <strong>5,000억원</strong> 규모의 자기주식 취득 신탁계약을 체결했다고 공시했습니다. 취득 기간은 2026년 5월 2일부터 2026년 10월 31일까지이며, 취득 주식은 <strong>전량 소각</strong> 예정입니다. 이는 현대차그룹 밸류업 프로그램의 일환입니다.`,
+    impact:`자사주 매입 소각은 단기 주가 지지력을 제공하고, 주당가치(EPS)를 개선시킵니다. 밸류업 기조 유지로 외국인 수급에도 긍정적 영향이 기대됩니다.`,
+    factors:['자사주 5,000억 매입', '전량 소각 예정', '밸류업 프로그램', 'EPS 개선'],
+    historical:[
+      {company:'현대차',date:'2024-02-26',desc:'자기주식 4,000억 취득 및 소각 공시',change:+3.4,sim:90},
+      {company:'기아',date:'2024-04-25',desc:'자사주 3,000억 취득 신탁 공시',change:+2.8,sim:82},
+    ],
+    chartTitle:'분기별 영업이익 추이',
+    chartUnit:'조원',
+    chartPeriods:['24Q3','24Q4','25Q1','25Q2','25Q3','25Q4','26Q1'],
+    spark:[3.6,3.4,3.8,4.0,4.2,4.0,4.4],
+  },
+  {
+    id:5, market:'us', source:'edgar',
+    company:'NVIDIA', ticker:'NVDA', color:'#76b900',
+    type:'실적', typeBadge:'8-K 공시', time:'08:01',
+    title:'NVIDIA FY2027 1분기 매출 가이던스 — 430억 달러로 상향 (예상치 대비 +11.7%)',
+    sentiment:'positive', score:92,
+    summary:`NVIDIA가 FY2027 1분기 매출 가이던스를 <strong>430억 달러(±2%)</strong>로 제시했습니다. 이는 시장 컨센서스인 385억 달러를 11.7% 초과하는 수치입니다. Microsoft, Google, Amazon, Meta 등 하이퍼스케일러의 AI 학습·추론 인프라 투자 가속화가 블랙웰 GPU 수요를 견인하고 있으며, 데이터센터 부문이 전체 매출의 90% 이상을 차지할 전망입니다. 매출총이익률은 71~73%로 가이던스됐습니다.`,
+    impact:`<strong>NVDA 및 AI 공급망 전반에 강력한 매수 신호입니다.</strong> 2025년 후반의 일시적 소화 국면을 완전히 벗어나 AI 인프라 투자가 재가속하고 있음을 확인했습니다. AMD, TSMC, 브로드컴 등이 연계 수혜를 받을 것으로 예상됩니다.`,
+    factors:['가이던스 +11.7% 상향', '블랙웰 GPU 수요', '하이퍼스케일러 Capex', '마진 71~73%'],
+    historical:[
+      {company:'NVIDIA',date:'2024-11-21',desc:'FY2025 3분기 실적 — 가이던스 375억 달러로 상향',change:+9.3,sim:95},
+      {company:'NVIDIA',date:'2024-05-23',desc:'FY2025 1분기 실적 — 데이터센터 매출 +427% YoY',change:+9.8,sim:88},
+    ],
+    chartTitle:'분기별 데이터센터 매출 추이',
+    chartUnit:'십억 달러',
+    chartPeriods:['FY25Q1','FY25Q2','FY25Q3','FY25Q4','FY26Q1','FY26Q2','FY27Q1'],
+    spark:[22.6,26.3,30.8,35.6,39.3,41.2,43.0],
+  },
+  {
+    id:6, market:'us', source:'edgar',
+    company:'Apple', ticker:'AAPL', color:'#555555',
+    type:'실적', typeBadge:'8-K 공시', time:'16:32',
+    title:'Apple FY2026 2분기 실적 — 아이폰 매출 부진, 중국 -18% YoY',
+    sentiment:'negative', score:-61,
+    summary:`Apple이 FY2026 2분기 매출 <strong>895억 달러</strong>를 발표했습니다. 시장 컨센서스(932억 달러) 대비 4.0% 미달했습니다. 아이폰 매출은 전년 동기 대비 8% 하락한 457억 달러를 기록했으며, 중화권 매출이 화웨이·샤오미와의 경쟁 심화 및 관세 영향으로 <strong>18% 급감</strong>했습니다. 서비스 매출은 12% 성장한 263억 달러로 하드웨어 부진을 일부 상쇄했습니다.`,
+    impact:`<strong>단기적으로 AAPL 주가에 부정적입니다.</strong> 중국 리스크와 관세 불확실성이 지속되고 있으며, 아이폰 교체 주기가 길어지는 추세입니다. 서비스 부문 성장세가 지속되고 있고, 1,720억 달러의 현금성 자산이 자사주 매입을 뒷받침하고 있다는 점은 하방을 제한합니다.`,
+    factors:['매출 컨센서스 하회', '중국 -18% YoY', '관세 역풍', '서비스 부문 성장 지속'],
+    historical:[
+      {company:'Apple',date:'2023-02-02',desc:'FY2023 1분기 어닝 미스 — 중국 코로나 생산 차질',change:-3.7,sim:87},
+      {company:'Apple',date:'2024-08-01',desc:'FY2024 3분기 — 중국 매출 7% 감소',change:-4.5,sim:81},
+    ],
+    chartTitle:'분기별 총매출 추이',
+    chartUnit:'십억 달러',
+    chartPeriods:['FY25Q2','FY25Q3','FY25Q4','FY26Q1','FY26Q2'],
+    spark:[93.4,85.8,94.9,91.0,89.5],
+  },
+  {
+    id:7, market:'us', source:'edgar',
+    company:'Tesla', ticker:'TSLA', color:'#cc0000',
+    type:'기타', typeBadge:'8-K 공시', time:'17:00',
+    title:'Tesla 보급형 EV \'Model Q\' 공식 발표 — 출시가 29,900달러',
+    sentiment:'positive', score:78,
+    summary:`Tesla가 8-K 공시를 통해 <strong>Model Q</strong>를 공식 발표했습니다. 가격은 29,900달러부터 시작하며, 텍사스 기가팩토리에서 2026년 4분기 생산을 시작해 2027년 1분기부터 인도 예정입니다. 양산 시 매출총이익률은 <strong>15~18%</strong>로 가이던스됐으며, 2026년 연간 인도 목표(210~230만 대)는 유지됩니다.`,
+    impact:`<strong>Tesla의 장기 볼륨 성장 테제에 긍정적입니다.</strong> 3만 달러 미만 가격대 진입으로 TAM(총가용시장)이 대폭 확대됩니다. 다만 15~18% 마진 가이던스는 현재 블렌디드 마진(18.5%)을 하회해 단기 마진 희석이 우려됩니다.`,
+    factors:['$29.9K 대중 시장 진입', 'TAM 확대', '2027년 인도', '마진 희석 단기 리스크'],
+    historical:[
+      {company:'Tesla',date:'2023-03-01',desc:'인베스터 데이 — Master Plan 3, 보급형 EV 공개',change:+5.8,sim:83},
+      {company:'Tesla',date:'2024-04-23',desc:'1분기 어닝 미스, 보급형 EV 연내 출시 확인',change:+15.3,sim:76},
+    ],
+    chartTitle:'분기별 차량 인도량 추이',
+    chartUnit:'만 대',
+    chartPeriods:['25Q1','25Q2','25Q3','25Q4','26Q1'],
+    spark:[38.6,44.4,47.1,49.5,42.2],
+  },
+  {
+    id:8, market:'us', source:'edgar',
+    company:'Meta', ticker:'META', color:'#0082fb',
+    type:'실적', typeBadge:'8-K 공시', time:'16:05',
+    title:'Meta 2026 1분기 실적 — 매출 423억 달러(+18% YoY), AI 광고 효과 확인',
+    sentiment:'positive', score:81,
+    summary:`Meta가 2026년 1분기 매출 <strong>423억 달러</strong>를 기록했습니다. 전년 동기 대비 18% 성장하며 컨센서스(408억 달러)를 3.7% 상회했습니다. AI 기반 광고 타게팅 개선으로 광고 노출수가 전년비 7%, 광고 단가가 10% 각각 상승했습니다. DAP(일일활성이용자)는 34억 9,000만 명으로 5% 증가했으며, 영업이익률은 38.5%에서 <strong>42.1%</strong>로 확대됐습니다.`,
+    impact:`<strong>단기·중장기 모두 긍정적입니다.</strong> AI 광고 효율 개선이 구조적이고 마진 확대로 이어지고 있습니다. Reality Labs 손실도 -14억 달러(컨센서스 -14억)로 안정적입니다. EU DMA 규제 비용은 지속적인 모니터링이 필요합니다.`,
+    factors:['매출 컨센서스 +3.7% 초과', 'AI 광고 타게팅', 'DAP +5% YoY', '영업마진 +3.6%p'],
+    historical:[
+      {company:'Meta',date:'2024-10-30',desc:'3분기 2024 어닝 비트 — AI 광고 가속',change:+4.1,sim:88},
+      {company:'Alphabet',date:'2024-10-29',desc:'3분기 2024 — 검색 매출 +12% YoY',change:+5.4,sim:71},
+    ],
+    chartTitle:'분기별 광고 매출 추이',
+    chartUnit:'십억 달러',
+    chartPeriods:['25Q1','25Q2','25Q3','25Q4','26Q1'],
+    spark:[35.6,37.9,39.4,41.8,42.3],
+  },
+];
+
+// ── 상태 ──────────────────────────────────────────────────────────────────
+let allFilings = [...DEMO_FILINGS];
+let activeMarket = 'all', activeSentiment = null, activeType = null, searchQuery = '';
+const canvasRegistry = {};
+let isLiveMode = false;
+let isPro = true; // MVP: PRO 기본 활성화
+let currentPage = 1;
+const ITEMS_PER_PAGE = 10;
+let _summaryTimers = [];
+
+function schedulePageSummaries() {
+  _summaryTimers.forEach(clearTimeout);
+  _summaryTimers = [];
+  if (!isLiveMode) return;
+  const filtered = getFiltered();
+  const start = (currentPage - 1) * ITEMS_PER_PAGE;
+  const pending = filtered.slice(start, start + ITEMS_PER_PAGE).filter(f => f.summary === null || f.summary === '__retry__');
+  pending.forEach((f, i) => {
+    _summaryTimers.push(setTimeout(() => generateSummary(f), i * 4200));
+  });
+}
+
+function activatePro() {
+  isPro = true;
+  localStorage.setItem('disclosai_pro', '1');
+  document.body.classList.add('pro-active');
+  const btn = document.getElementById('headerProBtn');
+  if (btn) { btn.textContent = '✓ PRO 이용 중'; btn.style.background = '#16a34a'; btn.style.boxShadow = '0 2px 8px rgba(22,163,74,.35)'; btn.onclick = null; }
+  showToast('⚡ PRO가 활성화됐습니다! 모든 분석 기능을 이용하실 수 있습니다.', 'pro-toast');
+}
+
+function showToast(msg, cls = '') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + cls + ' show';
+  setTimeout(() => { t.classList.remove('show'); }, 3500);
+}
+
+// ── API 상태 확인 ─────────────────────────────────────────────────────────
+async function checkApiStatus() {
+  try {
+    const r = await fetch('/api/status', { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) throw new Error();
+    const d = await r.json();
+    isLiveMode = d.dart || d.gemini;
+    updateApiStatusBadge(d);
+    if (isLiveMode) await loadRealFilings(d);
+  } catch {
+    showDemoBanner();
+  }
+}
+
+function updateApiStatusBadge(status) {
+  const badge = document.getElementById('apiStatusBadge');
+  const text = document.getElementById('apiStatusText');
+  badge.className = 'api-status live';
+  const parts = [];
+  if (status.dart) parts.push('DART');
+  parts.push('EDGAR');
+  if (status.gemini) parts.push('Gemini AI');
+  text.textContent = parts.join(' · ') + ' 연결됨';
+}
+
+function showDemoBanner() {
+  document.getElementById('apiBanner').style.display = 'flex';
+}
+
+// ── 실시간 공시 로드 ──────────────────────────────────────────────────────
+async function loadRealFilings(status) {
+  const loadingCards = Array.from({length: 4}, (_, i) => ({
+    id: `loading-${i}`, _loading: true,
+    company: '로딩 중...', ticker: '', market: 'kr', source: 'dart',
+    type: '실적', typeBadge: '공시 로딩 중', time: '',
+    title: '공시 데이터를 가져오는 중입니다...', sentiment: null, score: null,
+    summary: null, impact: null, factors: [], historical: [],
+    chartTitle: '', chartUnit: '', chartPeriods: [], spark: [],
+  }));
+
+  // 로딩 카드 표시
+  allFilings = [...loadingCards, ...DEMO_FILINGS.slice(0,2)];
+  renderFeed();
+
+  const results = await Promise.allSettled([
+    status.dart ? fetch('/api/filings/dart').then(r=>r.json()) : Promise.resolve({ filings: [] }),
+    fetch('/api/filings/edgar').then(r=>r.json()),
+  ]);
+
+  const dartData  = results[0].status === 'fulfilled' ? (results[0].value.filings || []) : [];
+  const edgarData = results[1].status === 'fulfilled' ? (results[1].value.filings || []) : [];
+
+  const normDate = d => d && d.length === 8
+    ? d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6,8) : (d || '');
+
+  const mapDart = f => ({
+    id: f.id, market: 'kr', source: 'dart',
+    company: f.company, ticker: f.ticker, color: stringToColor(f.company),
+    type: guessType(f.title), typeBadge: guessTypeBadge(f.title),
+    time: normDate(f.date).slice(5),   // "MM-DD"
+    title: f.title, sentiment: null, score: null,
+    summary: null, impact: null, factors: [], historical: undefined,
+    chartTitle: '핵심 지표 추이', chartUnit: '', chartPeriods: [], spark: [],
+    url: f.url, date: normDate(f.date), kosMarket: f.market,
+  });
+
+  const mapEdgar = f => ({
+    id: f.id, market: 'us', source: 'edgar',
+    company: f.company, ticker: f.ticker, color: stringToColor(f.company),
+    type: guessType(f.title), typeBadge: f.formType || '8-K',
+    time: f.date ? f.date.slice(5) : '',   // "MM-DD"
+    title: f.title, sentiment: null, score: null,
+    summary: null, impact: null, factors: [], historical: undefined,
+    chartTitle: '핵심 지표 추이', chartUnit: '', chartPeriods: [], spark: [],
+    url: f.url, date: f.date,
+  });
+
+  // 날짜 내림차순 병합 (DART+EDGAR 통합 정렬)
+  const dartMapped  = dartData.map(mapDart);
+  const edgarMapped = edgarData.map(mapEdgar);
+  const realFilings = [...dartMapped, ...edgarMapped]
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  // 전체 풀 저장 (필터용)
+  window._allDart  = dartMapped;
+  window._allEdgar = edgarMapped;
+
+  allFilings = realFilings.length > 0 ? realFilings : DEMO_FILINGS;
+  currentPage = 1;
+  renderFeed();
+  updateStats();
+  schedulePageSummaries();
+}
+
+async function generateSummary(filing) {
+  try {
+    const res = await fetch('/api/analyze/summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: filing.title,
+        company: filing.company,
+        source: filing.source,
+        date: filing.date || '',
+        id: filing.id || '',
+        url: filing.url || '',
+      }),
+    });
+    const data = await res.json();
+    const idx = allFilings.findIndex(f => f.id === filing.id);
+    if (idx !== -1) {
+      if (data.error || !data.summary) {
+        // 서버 오류 — 분석 실패 표시, sentiment는 null 유지 (중립으로 오인 방지)
+        allFilings[idx].summary = '__retry__';
+        refreshCard(filing.id);
+        return;
+      }
+      allFilings[idx].summary = data.summary;
+      allFilings[idx].sentiment = data.sentiment || 'neutral';
+      allFilings[idx].score = data.score ?? 0;
+      allFilings[idx].factors = data.factors || [];
+      if (data.impact) allFilings[idx].impact = data.impact;
+      refreshCard(filing.id);
+    }
+  } catch (e) {
+    const idx = allFilings.findIndex(f => f.id === filing.id);
+    if (idx !== -1) {
+      allFilings[idx].summary = '__retry__';
+      // sentiment / score는 null 유지 — 분석 실패를 중립으로 오인하지 않도록
+      refreshCard(filing.id);
+    }
+  }
+}
+
+function retrySummary(id) {
+  const idx = allFilings.findIndex(f => String(f.id) === String(id));
+  if (idx === -1) return;
+  allFilings[idx].summary = null; // 스피너로 되돌리기
+  refreshCard(id);
+  generateSummary(allFilings[idx]);
+}
+
+function refreshCard(id) {
+  const existing = document.getElementById(`card-${id}`);
+  if (!existing) return;
+  const f = allFilings.find(x => x.id === id);
+  if (!f) return;
+  const bodyOpen = existing.querySelector('.card-body')?.classList.contains('open');
+  const newEl = document.createElement('div');
+  newEl.innerHTML = renderCard(f);
+  existing.replaceWith(newEl.firstElementChild);
+  if (bodyOpen) toggleCard(id, true);
+  updateStats();
+}
+
+// ── 헬퍼 ─────────────────────────────────────────────────────────────────
+function stringToColor(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash<<5)-hash);
+  const colors = ['#1428a0','#ee2023','#002c5f','#0f4c81','#76b900','#555555','#cc0000','#0082fb','#004a97','#a50034'];
+  return colors[Math.abs(hash) % colors.length];
+}
+function guessType(title) {
+  if (/실적|매출|영업|이익|earnings|revenue/i.test(title)) return '실적';
+  if (/투자|증설|인수|합병|M&A|acquisition/i.test(title)) return '투자';
+  if (/임원|대표|CEO|사임|선임|officer/i.test(title)) return '인사';
+  if (/자기주식|유상증자|감자|배당|buyback/i.test(title)) return '자본';
+  if (/수주|공급계약|단일판매|contract|supply/i.test(title)) return '수주';
+  return '기타';
+}
+function guessTypeBadge(title) {
+  if (/수주|단일판매|공급계약/.test(title)) return '수주계약';
+  if (/영업(잠정)?실적|연결재무/.test(title)) return '실적공시';
+  if (/사업보고|반기보고|분기보고/.test(title)) return '정기보고';
+  if (/주요사항/.test(title)) return '주요사항';
+  if (/임원|대표/.test(title)) return '임원변경';
+  if (/자기주식/.test(title)) return '자기주식';
+  if (/유상증자|합병|분할/.test(title)) return '자본변동';
+  return title.slice(0, 12);
+}
+function formatKrTime(dateStr) {
+  // DART: "20260429" → "04-29"
+  if (!dateStr || dateStr.length < 8) return '';
+  return dateStr.slice(4, 6) + '-' + dateStr.slice(6, 8);
+}
+function formatTime(dateStr) { return formatKrTime(dateStr); }
+
+// ── 카드 렌더링 ────────────────────────────────────────────────────────────
+function renderCard(f) {
+  if (f._loading) {
+    return `<div class="card loading-card" id="card-${f.id}">
+      <div class="card-header">
+        <div class="company-logo" style="background:#e2e8f0"></div>
+        <div class="card-meta">
+          <div class="card-top"><span style="background:#e2e8f0;border-radius:4px;width:80px;height:16px;display:inline-block"></span></div>
+          <div style="background:#e2e8f0;border-radius:4px;width:280px;height:14px;margin-top:6px"></div>
+        </div>
+        <div class="sentiment-pill unknown"><span class="score">—</span></div>
+      </div>
+    </div>`;
+  }
+
+  const sent = f.sentiment || 'unknown';
+  const scoreAbs = f.score != null ? Math.abs(f.score) : '—';
+
+  // ── 유사 공시 비교 HTML (프리미엄) ──
+  const histHTML = f.historical === undefined
+    ? `<div class="loading-text"><span class="spinner"></span>유사 과거 공시를 검색 중입니다...</div>`
+    : (!f.historical || f.historical.length === 0)
+      ? `<div style="color:var(--muted);font-size:13px;padding:10px 0">유사 과거 공시가 없습니다.</div>`
+      : f.historical.map(h => {
+          const pc = h.priceChange != null ? h.priceChange : (h.change != null ? h.change : null);
+          const rc = h.relativeChange != null ? h.relativeChange : null;
+          const label = h.title ? (h.title.slice(0, 60) + (h.title.length > 60 ? '…' : '')) : (h.desc || '');
+          const upDn = pc != null ? (pc >= 0 ? 'up' : 'dn') : '';
+          const pcStr = pc != null ? `${pc > 0 ? '+' : ''}${pc}%` : '—';
+          const simContent = rc != null
+            ? `시장 대비 ${rc > 0 ? '+' : ''}${rc}%<div class="sim-bar-wrap"><div class="sim-bar" style="width:${Math.min(100, Math.abs(rc) * 5)}%"></div></div>`
+            : (h.sim != null ? `유사도 ${h.sim}%<div class="sim-bar-wrap"><div class="sim-bar" style="width:${h.sim}%"></div></div>` : '');
+          return `
+          <div class="hist-card">
+            <div class="hist-header"><div class="hist-company">${h.company}</div><div class="hist-date">${h.date}</div></div>
+            <div class="hist-desc">${label}</div>
+            <div class="hist-result">
+              <span class="price-change ${upDn}">${pcStr}</span>
+              <div class="sim-score">${simContent}</div>
+            </div>
+          </div>`;
+        }).join('');
+
+  // ── 영향 분석 HTML (프리미엄) ──
+  const impactHTML = f.impact
+    ? `<div class="impact-box ${sent}">${f.impact}<div class="impact-factors">${(f.factors||[]).map(x=>`<span class="factor-chip">${x}</span>`).join('')}</div></div>`
+    : `<div class="impact-box neutral" style="color:var(--muted);font-style:italic">AI 영향 분석 생성 중...</div>`;
+
+
+  // ── 차트 HTML ──
+  const lastVal = f.spark?.length ? f.spark[f.spark.length-1] : null;
+  const prevVal = f.spark?.length > 1 ? f.spark[f.spark.length-2] : null;
+  const chgPct = (lastVal != null && prevVal != null) ? (((lastVal-prevVal)/prevVal)*100).toFixed(1) : null;
+  const chgClass = chgPct > 0 ? 'up' : 'dn';
+
+  return `
+  <div class="card ${sent}" id="card-${f.id}" data-market="${f.market}" data-type="${f.type}" data-sentiment="${sent}">
+    <div class="card-header" onclick="toggleCard('${f.id}')">
+      <div class="company-logo" style="background:${f.color}">${f.company[0]}</div>
+      <div class="card-meta">
+        <div class="card-top">
+          <span class="company-name">${f.company}</span>
+          <span class="market-badge ${f.market}">${f.market==='kr'?'🇰🇷 DART':'🇺🇸 EDGAR'}</span>
+          <span class="filing-type-badge">${f.typeBadge}</span>
+          <span class="card-time">${f.time ? '오늘 '+f.time : ''}</span>
+          ${f.url ? `<a href="${f.url}" target="_blank" class="source-link" onclick="event.stopPropagation()">📄 원문</a>` : ''}
+        </div>
+        <div class="card-title">${f.title}</div>
+      </div>
+      <div class="sentiment-pill ${sent}">
+        <span class="score">${sent==='positive'?'↑':sent==='negative'?'↓':sent==='neutral'?'→':'—'}</span>
+        <span>${scoreAbs}</span>
+      </div>
+    </div>
+    <button class="expand-hint" onclick="toggleCard('${f.id}')">
+      <span>AI 요약 · 시장 영향 분석(PRO) · 유사 공시 비교(PRO) 보기</span>
+      <span class="chevron" id="chev-${f.id}">▾</span>
+    </button>
+    <div class="card-body" id="body-${f.id}">
+
+      <!-- 무료: AI 요약 -->
+      <div class="section-label">
+        <span class="ai-tag">✦ AI</span> 공시 요약
+        <span class="tier-badge free">무료</span>
+      </div>
+      <div class="ai-summary" id="summary-${f.id}">
+        ${f.summary === '__retry__'
+          ? `<span style="color:var(--muted);font-size:13px">AI 요약 생성에 실패했습니다 (한도 초과).</span>
+             <button onclick="retrySummary('${f.id}')" style="margin-left:10px;padding:4px 12px;font-size:12px;font-weight:600;border:1.5px solid var(--accent);border-radius:6px;color:var(--accent);background:transparent;cursor:pointer">↻ 다시 시도</button>`
+          : f.summary
+            ? f.summary
+            : `<span class="loading-text"><span class="spinner"></span>AI가 공시를 분석하는 중입니다...</span>`
+        }
+      </div>
+
+      <!-- PRO: 주가 영향 분석 -->
+      <div class="section-label">
+        <span class="ai-tag">✦ AI</span> 주가 영향 분석
+        <span class="tier-badge pro">PRO</span>
+      </div>
+      <div class="premium-gate">
+        <div class="premium-preview">
+          ${impactHTML}
+        </div>
+        <div class="premium-fade"></div>
+        <div class="premium-cta">
+          <div class="lock-icon">🔒</div>
+          <div class="lock-title">PRO 전용 기능</div>
+          <div class="lock-desc">주가 영향 분석은 PRO 구독자에게만 제공됩니다. 긍/부정 근거와 단·중·장기 전망을 확인하세요.</div>
+          <button class="upgrade-btn" onclick="activatePro()">⚡ PRO 즉시 활성화</button>
+        </div>
+      </div>
+
+      <!-- PRO: 유사 과거 공시 비교 -->
+      <div class="section-label">
+        📜 유사 과거 공시 비교
+        <span class="tier-badge pro">PRO</span>
+      </div>
+      <div class="premium-gate" style="min-height:140px">
+        <div class="premium-preview">
+          <div class="hist-grid" id="hist-${f.id}">${histHTML}</div>
+        </div>
+        <div class="premium-fade"></div>
+        <div class="premium-cta">
+          <div class="lock-icon">🔒</div>
+          <div class="lock-title">PRO 전용 기능</div>
+          <div class="lock-desc">과거 유사 공시 시 주가 등락률 데이터를 PRO에서 확인하세요.</div>
+          <button class="upgrade-btn" onclick="activatePro()">⚡ PRO 즉시 활성화</button>
+        </div>
+      </div>
+
+      <!-- 무료: 분기별 핵심 지표 추이 -->
+      ${f.spark?.length > 0 ? `
+      <div class="section-label">
+        📈 분기별 핵심 지표 추이
+        <span class="tier-badge free">무료</span>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart-title-row">
+          <div>
+            <div class="chart-title">${f.chartTitle}</div>
+            <div class="chart-subtitle">단위: ${f.chartUnit} · ${f.chartPeriods[0] || ''}~${f.chartPeriods[f.chartPeriods.length-1] || ''} 기준</div>
+          </div>
+          ${lastVal != null ? `
+          <div class="chart-last-val">
+            <div class="val ${chgClass}">${lastVal} ${f.chartUnit}</div>
+            ${chgPct != null ? `<div class="chg ${chgClass}">${chgPct > 0 ? '▲' : '▼'} ${Math.abs(chgPct)}% (전분기비)</div>` : ''}
+          </div>` : ''}
+        </div>
+        <canvas id="spark-${f.id}" class="sparkline" height="80"></canvas>
+      </div>` : ''}
+
+      ${f.url ? `<a href="${f.url}" target="_blank" class="source-btn">📄 공시 원문 보기 →</a>` : ''}
+
+    </div>
+  </div>`;
+}
+
+// ── 카드 토글 ─────────────────────────────────────────────────────────────
+function toggleCard(id, forceOpen=false) {
+  const body = document.getElementById(`body-${id}`);
+  const chev = document.getElementById(`chev-${id}`);
+  if (!body) return;
+  const isOpen = body.classList.contains('open');
+  if (!isOpen || forceOpen) {
+    body.classList.add('open');
+    chev?.classList.add('open');
+    const f = allFilings.find(x => x.id == id);
+    if (f?.spark?.length) setTimeout(() => drawSparkline(`spark-${id}`, f), 60);
+    // 요약이 없으면 카드 열 때 즉시 AI 분석 시작
+    if (f && f.summary === null && isLiveMode) generateSummary(f);
+    if (f && f.historical === undefined && isLiveMode) loadSimilarFilings(f);
+  } else {
+    body.classList.remove('open');
+    chev?.classList.remove('open');
+  }
+}
+
+// ── 유사 공시 비교 로딩 ───────────────────────────────────────────────────
+async function loadSimilarFilings(filing) {
+  const pool = filing.market === 'kr'
+    ? (window._allDart || [])
+    : (window._allEdgar || []);
+
+  const similar = pool
+    .filter(f => f.company === filing.company && f.type === filing.type && f.id !== filing.id)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 4);
+
+  const idx = allFilings.findIndex(f => f.id === filing.id);
+
+  if (similar.length === 0) {
+    if (idx !== -1) allFilings[idx].historical = null;
+    updateHistSection(filing.id, null);
+    return;
+  }
+
+  const results = await Promise.allSettled(similar.map(f => {
+    const params = new URLSearchParams({ ticker: f.ticker, date: f.date });
+    if (f.kosMarket) params.set('market', f.kosMarket);
+    return fetch(`/api/price-impact?${params}`)
+      .then(r => r.json())
+      .then(impact => ({
+        id: f.id, company: f.company, date: f.date, title: f.title,
+        priceChange: impact.priceChange,
+        marketChange: impact.marketChange,
+        relativeChange: impact.relativeChange,
+        status: impact.status,
+      }));
+  }));
+
+  const data = results
+    .filter(r => r.status === 'fulfilled' && r.value.status === 'ok')
+    .map(r => r.value);
+
+  const historical = data.length > 0 ? data : null;
+  if (idx !== -1) allFilings[idx].historical = historical;
+  updateHistSection(filing.id, historical);
+}
+
+function updateHistSection(id, data) {
+  const el = document.getElementById(`hist-${id}`);
+  if (!el) return;
+  if (!data || data.length === 0) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:10px 0">유사 과거 공시가 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = data.map(h => {
+    const pc = h.priceChange;
+    const rc = h.relativeChange;
+    const upDn = pc != null ? (pc >= 0 ? 'up' : 'dn') : '';
+    const pcStr = pc != null ? `${pc > 0 ? '+' : ''}${pc}%` : '—';
+    const rcStr = rc != null ? `${rc > 0 ? '+' : ''}${rc}%` : '—';
+    const barW = Math.min(100, Math.abs(rc || 0) * 5);
+    const label = (h.title || '').slice(0, 60) + ((h.title || '').length > 60 ? '…' : '');
+    const clickable = h.id ? `onclick="navigateToFiling('${h.id}')" style="cursor:pointer"` : '';
+    return `
+    <div class="hist-card hist-card-link" ${clickable}>
+      <div class="hist-header"><div class="hist-company">${h.company}</div><div class="hist-date">${h.date}</div></div>
+      <div class="hist-desc">${label}</div>
+      <div class="hist-result">
+        <span class="price-change ${upDn}">${pcStr}</span>
+        <div class="sim-score">시장 대비 ${rcStr}<div class="sim-bar-wrap"><div class="sim-bar" style="width:${barW}%"></div></div></div>
+      </div>
+      ${h.id ? '<div style="font-size:11px;color:var(--accent);margin-top:6px;font-weight:600">공시 보기 →</div>' : ''}
+    </div>`;
+  }).join('');
+}
+
+function navigateToFiling(id) {
+  const filtered = getFiltered();
+  const idx = filtered.findIndex(f => String(f.id) === String(id));
+  if (idx === -1) return;
+  const targetPage = Math.floor(idx / ITEMS_PER_PAGE) + 1;
+  if (targetPage !== currentPage) {
+    currentPage = targetPage;
+    renderFeed();
+    schedulePageSummaries();
+  }
+  setTimeout(() => {
+    const el = document.getElementById(`card-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const body = document.getElementById(`body-${id}`);
+    if (body && !body.classList.contains('open')) toggleCard(id);
+  }, 100);
+}
+
+// ── 차트 ──────────────────────────────────────────────────────────────────
+function drawSparkline(canvasId, f) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  if (canvasRegistry[canvasId]) { canvasRegistry[canvasId].destroy(); delete canvasRegistry[canvasId]; }
+  const color = f.sentiment==='positive'?'#16a34a':f.sentiment==='negative'?'#dc2626':'#d97706';
+  const grad = ctx.getContext('2d').createLinearGradient(0,0,0,80);
+  grad.addColorStop(0, color+'44'); grad.addColorStop(1, color+'00');
+  canvasRegistry[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: f.chartPeriods,
+      datasets: [{
+        data: f.spark, borderColor: color, borderWidth: 2.5,
+        pointRadius: 3, pointBackgroundColor: color,
+        fill: true, backgroundColor: grad, tension: 0.35,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: {display:false}, tooltip: {
+        callbacks: { label: ctx => `${ctx.parsed.y} ${f.chartUnit}` },
+        bodyFont: {size:12}, titleFont:{size:11},
+      }},
+      scales: {
+        x: { grid:{display:false}, ticks:{font:{size:10},color:'#94a3b8'} },
+        y: { grid:{color:'#f1f5f9'}, ticks:{font:{size:10},color:'#94a3b8', callback: v=>`${v} ${f.chartUnit}`} },
+      },
+    },
+  });
+}
+
+// ── 필터 & 검색 ───────────────────────────────────────────────────────────
+function getFiltered() {
+  return allFilings.filter(f => {
+    if (f._loading) return false;
+    if (activeMarket !== 'all' && f.market !== activeMarket) return false;
+    if (activeSentiment && f.sentiment !== activeSentiment) return false;
+    if (activeType && f.type !== activeType) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      if (!(f.company+f.title+f.ticker).toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderFeed() {
+  const feed = document.getElementById('feed');
+  const loadingOnes = allFilings.filter(f=>f._loading);
+  const filtered = getFiltered();
+
+  if (loadingOnes.length) {
+    feed.innerHTML = [...loadingOnes, ...filtered.slice(0, 2)].map(renderCard).join('');
+    renderPagination(0);
+    return;
+  }
+  if (!filtered.length) {
+    feed.innerHTML = '<div class="empty-state">조건에 맞는 공시가 없습니다.</div>';
+    renderPagination(0);
+    return;
+  }
+
+  const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE);
+  if (currentPage > totalPages) currentPage = Math.max(1, totalPages);
+  const start = (currentPage - 1) * ITEMS_PER_PAGE;
+  feed.innerHTML = filtered.slice(start, start + ITEMS_PER_PAGE).map(renderCard).join('');
+  renderPagination(filtered.length);
+}
+
+function renderPagination(total) {
+  const pag = document.getElementById('pagination');
+  if (!pag) return;
+  const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
+  if (totalPages <= 1) { pag.innerHTML = ''; return; }
+
+  const start = (currentPage - 1) * ITEMS_PER_PAGE + 1;
+  const end = Math.min(currentPage * ITEMS_PER_PAGE, total);
+  let html = `<div class="pag-info">${start}–${end} / 총 ${total}건</div><div class="pag-btns">`;
+  html += `<button class="pag-btn" onclick="goPage(${currentPage-1})" ${currentPage===1?'disabled':''}>‹ 이전</button>`;
+
+  const lo = Math.max(1, currentPage-2), hi = Math.min(totalPages, currentPage+2);
+  if (lo > 1) { html += `<button class="pag-btn" onclick="goPage(1)">1</button>`; if (lo > 2) html += `<span class="pag-ellipsis">…</span>`; }
+  for (let p = lo; p <= hi; p++) html += `<button class="pag-btn${p===currentPage?' active':''}" onclick="goPage(${p})">${p}</button>`;
+  if (hi < totalPages) { if (hi < totalPages-1) html += `<span class="pag-ellipsis">…</span>`; html += `<button class="pag-btn" onclick="goPage(${totalPages})">${totalPages}</button>`; }
+
+  html += `<button class="pag-btn" onclick="goPage(${currentPage+1})" ${currentPage===totalPages?'disabled':''}>다음 ›</button></div>`;
+  pag.innerHTML = html;
+}
+
+function goPage(p) {
+  const filtered = getFiltered();
+  const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE);
+  currentPage = Math.max(1, Math.min(p, totalPages));
+  renderFeed();
+  document.querySelector('main').scrollTop = 0;
+  schedulePageSummaries();
+}
+
+function updateStats() {
+  const today = new Date().toISOString().slice(0, 10); // "2026-04-30"
+  const allDart  = window._allDart  || allFilings.filter(f=>!f._loading && f.market==='kr');
+  const allEdgar = window._allEdgar || allFilings.filter(f=>!f._loading && f.market==='us');
+
+  const todayKr = allDart.filter(f => f.date === today).length;
+  const todayUs = allEdgar.filter(f => f.date === today).length;
+
+  const filings = allFilings.filter(f=>!f._loading);
+  document.getElementById('stat-total').textContent = (todayKr + todayUs).toLocaleString();
+  document.getElementById('stat-pos').textContent = filings.filter(f=>f.sentiment==='positive').length;
+  document.getElementById('stat-neg').textContent = filings.filter(f=>f.sentiment==='negative').length;
+  document.getElementById('stat-time').textContent = '업데이트: ' + new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+  document.getElementById('cnt-all').textContent = (allDart.length + allEdgar.length).toLocaleString();
+  document.getElementById('cnt-kr').textContent = allDart.length.toLocaleString();
+  document.getElementById('cnt-us').textContent = allEdgar.length.toLocaleString();
+  document.getElementById('cnt-pos').textContent = filings.filter(f=>f.sentiment==='positive').length;
+  document.getElementById('cnt-neg').textContent = filings.filter(f=>f.sentiment==='negative').length;
+  document.getElementById('cnt-neu').textContent = filings.filter(f=>f.sentiment==='neutral').length;
+}
+
+function filterMarket(m, btn) {
+  activeMarket = m; currentPage = 1;
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    if (/filterMarket/.test(b.onclick?.toString()||'')) b.classList.remove('active');
+  });
+  btn.classList.add('active');
+  renderFeed();
+}
+function filterSentiment(s, btn) {
+  activeSentiment = activeSentiment === s ? null : s; currentPage = 1;
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    if (/filterSentiment/.test(b.onclick?.toString()||'')) b.classList.remove('active');
+  });
+  if (activeSentiment) btn.classList.add('active');
+  renderFeed();
+}
+function filterType(t, btn) {
+  activeType = activeType === t ? null : t; currentPage = 1;
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    if (/filterType/.test(b.onclick?.toString()||'')) b.classList.remove('active');
+  });
+  if (activeType) btn.classList.add('active');
+  renderFeed();
+}
+function switchTab(tab, btn) {
+  document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  if (tab !== 'today') alert('해당 탭은 준비 중입니다.');
+}
+document.getElementById('searchInput').addEventListener('input', e => {
+  searchQuery = e.target.value; currentPage = 1; renderFeed();
+});
+
+// ── 모달 ──────────────────────────────────────────────────────────────────
+function openModal() { document.getElementById('modal').classList.add('open'); }
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+document.getElementById('modal').addEventListener('click', e => { if(e.target===e.currentTarget) closeModal(); });
+
+// ── 초기화 ────────────────────────────────────────────────────────────────
+allFilings = [...DEMO_FILINGS];
+// MVP: PRO 항상 활성화
+document.body.classList.add('pro-active');
+const _proBtn = document.getElementById('headerProBtn');
+if (_proBtn) { _proBtn.textContent = '✓ PRO 이용 중'; _proBtn.style.background = '#16a34a'; _proBtn.style.boxShadow = '0 2px 8px rgba(22,163,74,.35)'; _proBtn.onclick = null; }
+renderFeed();
+updateStats();
+checkApiStatus();
+setInterval(updateStats, 30000);
+</script>
+</body>
+</html>
