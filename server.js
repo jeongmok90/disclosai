@@ -166,7 +166,7 @@ app.get('/api/filings/edgar', async (req, res) => {
             const { data } = await axios.get(
               `https://data.sec.gov/submissions/CIK${co.cik}.json`,
               {
-                headers: { 'User-Agent': 'DisclosAI info@disclosai.kr' },
+                headers: { 'User-Agent': 'Context.ai info@disclosai.kr' },
                 timeout: 12000,
               }
             );
@@ -259,7 +259,7 @@ async function fetchDartDocText(rcept_no) {
   }
 }
 
-const EDGAR_HEADERS = { 'User-Agent': 'DisclosAI info@disclosai.kr' };
+const EDGAR_HEADERS = { 'User-Agent': 'Context.ai info@disclosai.kr' };
 
 function stripHtmlText(html) {
   return html
@@ -503,7 +503,7 @@ async function fetchInsiderSignal(cikRaw, filingDate) {
     startDt.setDate(startDt.getDate() - 15);
 
     const { data } = await axios.get(`https://data.sec.gov/submissions/CIK${cik}.json`,
-      { headers: { 'User-Agent': 'DisclosAI info@disclosai.kr' }, timeout: 8000 });
+      { headers: { 'User-Agent': 'Context.ai info@disclosai.kr' }, timeout: 8000 });
 
     const forms   = data.filings?.recent?.form          || [];
     const dates   = data.filings?.recent?.filingDate    || [];
@@ -779,7 +779,7 @@ app.get('/api/status', (_, res) => res.json({
 }));
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 DisclosAI 서버 실행 중 → http://localhost:${PORT}`);
+  console.log(`\n🚀 Context.ai 서버 실행 중 → http://localhost:${PORT}`);
   console.log(`   DART API:   ${process.env.DART_API_KEY ? '✅ 연결됨' : '❌ 키 없음'}`);
   console.log(`   Gemini AI:  ${process.env.GEMINI_API_KEY ? '✅ 연결됨' : '❌ 키 없음'}`);
   console.log(`   EDGAR:      ✅ 공개 API (키 불필요)`);
