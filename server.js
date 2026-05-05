@@ -614,9 +614,11 @@ async function fetchFmpData(ticker, filingDate) {
     // 3. 밸류에이션 과열 지표
     const ratios = Array.isArray(ratiosRes.data) ? ratiosRes.data[0] : ratiosRes.data;
     let valuationLine = null;
-    const pe  = ratios?.priceToEarningsRatioTTM;
-    const ps  = ratios?.priceToSalesRatioTTM;
-    const pb  = ratios?.priceToBookRatioTTM;
+    // FMP stable/ 엔드포인트는 peRatioTTM, api/v3는 priceToEarningsRatioTTM — 둘 다 시도
+    const pe  = ratios?.peRatioTTM          ?? ratios?.priceToEarningsRatioTTM ?? null;
+    const ps  = ratios?.priceToSalesRatioTTM ?? ratios?.psRatioTTM             ?? null;
+    const pb  = ratios?.priceToBookRatioTTM  ?? ratios?.pbRatioTTM             ?? null;
+    if (ratios) console.log('[FMP ratios keys]', Object.keys(ratios).slice(0, 10), '| pe=', pe, 'ps=', ps);
     if (pe || ps) {
       const parts = [];
       if (pe)  parts.push(`P/E ${Math.round(pe)}x`);
