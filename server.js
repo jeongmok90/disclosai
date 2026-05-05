@@ -451,6 +451,63 @@ function extractFinancialSection(text, maxLen = 5000) {
 // ── 5대 주가 예측 변수 계산 ───────────────────────────────────────────────
 
 // 1. NLP 감성 점수 (로컬 계산)
+// 0. FMP 컨센서스 + CAPEX 데이터 (미국 주식 전용)
+async function fetchFmpData(ticker, filingDate) {
+  const key = process.env.FMP_API_KEY;
+  if (!key || !ticker) return null;
+  try {
+    const [earningsRes, cashflowRes, incomeRes] = await Promise.all([
+      axios.get(`https://financialmodelingprep.com/stable/earnings?symbol=${ticker}&apikey=${key}`, { timeout: 8000 }),
+      axios.get(`https://financialmodelingprep.com/stable/cash-flow-statement?symbol=${ticker}&period=quarter&limit=5&apikey=${key}`, { timeout: 8000 }),
+      axios.get(`https://financialmodelingprep.com/stable/income-statement?symbol=${ticker}&period=quarter&limit=5&apikey=${key}`, { timeout: 8000 }),
+    ]);
+
+    // 1. 어닝 서프라이즈: 공시일과 가장 가까운 실적 찾기
+    const earnings = (earningsRes.data || []).filter(e => e.epsActual != null && e.date <= filingDate);
+    const latest = earnings[0] || null;
+    let consensusLine = null;
+    if (latest) {
+      const epsSurprise = latest.epsEstimated
+        ? Math.round((latest.epsActual - latest.epsEstimated) / Math.abs(latest.epsEstimated) * 1000) / 10
+        : null;
+      const revSurprise = latest.revenueEstimated && latest.revenueActual
+        ? Math.round((latest.revenueActual - latest.revenueEstimated) / latest.revenueEstimated * 1000) / 10
+        : null;
+      const fmt = (n) => n > 0 ? `+${n}%` : `${n}%`;
+      const parts = [];
+      if (epsSurprise != null) parts.push(`EPS 실제 $${latest.epsActual} vs 컨센서스 $${latest.epsEstimated} (${fmt(epsSurprise)})`);
+      if (revSurprise != null) {
+        const revB = (v) => `$${(v/1e9).toFixed(1)}B`;
+        parts.push(`매출 실제 ${revB(latest.revenueActual)} vs 컨센서스 ${revB(latest.revenueEstimated)} (${fmt(revSurprise)})`);
+      }
+      if (parts.length) consensusLine = parts.join(' / ');
+    }
+
+    // 2. CAPEX 효율성: 최근 2분기 CAPEX 증감률 + 매출 대비 비율
+    const cashflows = cashflowRes.data || [];
+    const incomes = incomeRes.data || [];
+    let capexLine = null;
+    if (cashflows.length >= 2) {
+      const cur = cashflows[0], prev = cashflows[1];
+      const capexCur  = Math.abs(cur.capitalExpenditure  || 0);
+      const capexPrev = Math.abs(prev.capitalExpenditure || 0);
+      const revCur  = incomes[0]?.revenue || 0;
+      const capexGrowth = capexPrev > 0 ? Math.round((capexCur - capexPrev) / capexPrev * 1000) / 10 : null;
+      const capexRatio  = revCur > 0 ? Math.round(capexCur / revCur * 1000) / 10 : null;
+      const fmtB = (v) => `$${(v/1e9).toFixed(2)}B`;
+      if (capexGrowth != null) {
+        capexLine = `CAPEX ${fmtB(capexCur)} (전분기 대비 ${capexGrowth > 0 ? '+' : ''}${capexGrowth}%)`;
+        if (capexRatio != null) capexLine += `, 매출 대비 ${capexRatio}%`;
+      }
+    }
+
+    return { consensusLine, capexLine };
+  } catch (e) {
+    console.warn('FMP 조회 실패:', e.message.slice(0, 60));
+    return null;
+  }
+}
+
 function computeNlpSentiment(text) {
   if (!text) return null;
   const NEG = ['uncertain','uncertainty','challenge','challenging','risk','headwind',
@@ -608,7 +665,9 @@ app.post('/api/analyze/summary', async (req, res) => {
     const cikFromUrl = url?.match(/\/edgar\/data\/(\d+)\//)?.[1];
     const formType   = (title.match(/\[(10-[QK]|8-K)\]/) || [])[1] || '';
 
-    const [docText, macro, insider] = await Promise.all([
+    const ticker = req.body.ticker || null;
+
+    const [docText, macro, insider, fmp] = await Promise.all([
       source === 'dart' && id
         ? fetchDartDocText(id)
         : source === 'edgar' && url
@@ -618,6 +677,9 @@ app.post('/api/analyze/summary', async (req, res) => {
       source === 'edgar' && cikFromUrl
         ? fetchInsiderSignal(cikFromUrl, date)
         : Promise.resolve({ salesCount: 0, salesAmountM: 0, form4Count: 0, signal: 'neutral', detail: 'EDGAR 아님' }),
+      source === 'edgar' && ticker
+        ? fetchFmpData(ticker, date)
+        : Promise.resolve(null),
     ]);
 
     const nlp = computeNlpSentiment(docText);
@@ -654,8 +716,8 @@ app.post('/api/analyze/summary', async (req, res) => {
 공시 제목: ${title}
 ${hasDoc ? `\n[공시 원문${isFullDoc ? ' — 전체' : ' — 핵심 섹션'}]\n${textForPrompt}\n` : '\n(원문 미확보 — 제목·유형 기반 분석)\n'}
 ━━━ 5대 주가 예측 변수 ━━━
-① 가이던스 이격도: 원문에서 차기 가이던스와 컨센서스 대비 beat/miss를 직접 추출하세요
-② CAPEX 효율성: 원문에서 자본지출 증가율과 매출 성장률을 직접 추출·비교하세요
+① 가이던스 이격도: ${fmp?.consensusLine ? `[실제 데이터] ${fmp.consensusLine}` : '원문에서 차기 가이던스와 컨센서스 대비 beat/miss를 직접 추출하세요'}
+② CAPEX 효율성: ${fmp?.capexLine ? `[실제 데이터] ${fmp.capexLine} — 매출 성장률과 비교해 효율성을 평가하세요` : '원문에서 자본지출 증가율과 매출 성장률을 직접 추출·비교하세요'}
 ③ ${nlpLine}
 ④ ${macroLine}
 ⑤ ${insiderLine}
@@ -665,6 +727,7 @@ ${hasDoc ? `\n[공시 원문${isFullDoc ? ' — 전체' : ' — 핵심 섹션'}]
 ${typeInstruction}
 
 규칙:
+- [실제 데이터] 표시 항목은 해당 수치를 반드시 impact에 활용하세요
 - 원문에 있는 실제 수치만 인용하세요 (수치 생성 금지)
 - 수치 미기재 시 "미기재"로 표시
 - score는 5대 변수를 종합한 -100~100 정수
@@ -672,7 +735,7 @@ ${typeInstruction}
 impact 작성 지침:
 위 5대 변수 중 이 공시에서 실질적으로 주가에 영향을 줄 것으로 판단되는 변수만 골라 2~3문장으로 작성하세요.
 판단 기준:
-- 가이던스·CAPEX: 원문에서 수치가 확인되고 방향성이 뚜렷할 때만
+- 가이던스·CAPEX: [실제 데이터]가 있으면 반드시 포함. 없을 경우 원문에서 수치 확인 시만
 - NLP 감성: 부정/긍정 단어 비율 차이가 1.5배 이상일 때만
 - 매크로: VIX > 25이거나 금리 > 4.5% 또는 < 3.5%일 때만
 - 내부자 거래: 매도 금액이 $1M 이상일 때만
