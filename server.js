@@ -577,11 +577,11 @@ async function fetchFmpData(ticker, filingDate) {
   }
 
   try {
-    const [earningsRes, cashflowRes, incomeRes, ratiosRes] = await Promise.all([
+    // ratios-ttm 호출 제거 — P/E는 Twelve Data 주가 + FMP EPS로 직접 계산 (API 호출 3→ 절약)
+    const [earningsRes, cashflowRes, incomeRes] = await Promise.all([
       axios.get(`https://financialmodelingprep.com/stable/earnings?symbol=${ticker}&apikey=${key}`, { timeout: 8000 }),
       axios.get(`https://financialmodelingprep.com/stable/cash-flow-statement?symbol=${ticker}&period=quarter&limit=5&apikey=${key}`, { timeout: 8000 }),
       axios.get(`https://financialmodelingprep.com/stable/income-statement?symbol=${ticker}&period=quarter&limit=5&apikey=${key}`, { timeout: 8000 }),
-      axios.get(`https://financialmodelingprep.com/stable/ratios-ttm?symbol=${ticker}&apikey=${key}`, { timeout: 8000 }),
     ]);
 
     // 1. 어닝 서프라이즈
@@ -623,26 +623,10 @@ async function fetchFmpData(ticker, filingDate) {
       }
     }
 
-    // 3. 밸류에이션 과열 지표
-    const ratios = Array.isArray(ratiosRes.data) ? ratiosRes.data[0] : ratiosRes.data;
-    let valuationLine = null;
-    // FMP stable/ 엔드포인트는 peRatioTTM, api/v3는 priceToEarningsRatioTTM — 둘 다 시도
-    const pe  = ratios?.peRatioTTM          ?? ratios?.priceToEarningsRatioTTM ?? null;
-    const ps  = ratios?.priceToSalesRatioTTM ?? ratios?.psRatioTTM             ?? null;
-    const pb  = ratios?.priceToBookRatioTTM  ?? ratios?.pbRatioTTM             ?? null;
-    if (ratios) console.log('[FMP ratios keys]', Object.keys(ratios).slice(0, 10), '| pe=', pe, 'ps=', ps);
-    if (pe || ps) {
-      const parts = [];
-      if (pe)  parts.push(`P/E ${Math.round(pe)}x`);
-      if (ps)  parts.push(`P/S ${Math.round(ps)}x`);
-      if (pb)  parts.push(`P/B ${Math.round(pb)}x`);
-      const risk = (pe > 100 || ps > 20)
-        ? '⚠️ 극단적 고평가 — 완벽한 실적 이상을 요구하는 밸류에이션'
-        : (pe > 50 || ps > 10)
-          ? '주의 — 높은 밸류에이션으로 실망 매물 가능성'
-          : '적정 수준';
-      valuationLine = `${parts.join(', ')} → ${risk}`;
-    }
+    // 3. TTM EPS 계산 (최근 4분기 합산) — P/E 계산에 사용
+    const allEarnings = earningsRes.data || [];
+    const last4 = allEarnings.filter(e => e.epsActual != null).slice(0, 4);
+    const ttmEps = last4.length === 4 ? last4.reduce((s, e) => s + e.epsActual, 0) : null;
 
     // 4. 매출 성장률 둔화 감지 (최근 3~4분기 YoY 성장률 추이)
     let growthLine = null;
@@ -669,7 +653,7 @@ async function fetchFmpData(ticker, filingDate) {
       }
     }
 
-    const result = { consensusLine, capexLine, valuationLine, growthLine };
+    const result = { consensusLine, capexLine, ttmEps, growthLine };
     _fmpCache.set(cacheKey, { data: result, ts: Date.now() });
     return result;
   } catch (e) {
@@ -715,7 +699,7 @@ async function fetchMomentum30(ticker, market, filingDate) {
     else if (ret30 <= -10) { signal = 'positive'; comment = `공시 전 30일 ${ret30}% 하락 — 낮아진 기대치로 서프라이즈 여지`; }
     else { comment = `공시 전 30일 수익률 ${ret30 > 0 ? '+' : ''}${ret30}% — 중립적 모멘텀`; }
 
-    return { ret30, signal, comment };
+    return { ret30, signal, comment, lastPrice: last };
   } catch (e) {
     console.warn('모멘텀 조회 실패:', e.message.slice(0, 60));
     return null;
@@ -1029,13 +1013,26 @@ app.post('/api/analyze/summary', async (req, res) => {
         : '내부자 거래: 15일 내 없음';
 
     const momentumLine  = momentum?.comment || null;
-    const valuationLine = fmp?.valuationLine || null;
-    const growthLine    = fmp?.growthLine    || null;
+    const growthLine = fmp?.growthLine || null;
 
     // DART 전용: 원문 파싱 (재무수치 + 유형별 특화 수치)
     const dartFinLine      = source === 'dart' ? parseDartFinancials(docText) : null;
     const dartSpecificLine = source === 'dart' ? parseDartSpecific(docText, filingType) : null;
     const krMacroLine      = krMacro?.comment || null;
+
+    // P/E 직접 계산 (Twelve Data 마지막 주가 ÷ FMP TTM EPS) — ratios-ttm API 호출 없이 밸류에이션 산출
+    let valuationLine = null;
+    if (source === 'edgar') {
+      const lastPrice = momentum?.lastPrice || null;
+      const ttmEps    = fmp?.ttmEps || null;
+      if (lastPrice && ttmEps && ttmEps > 0) {
+        const pe = lastPrice / ttmEps;
+        const peStr = `P/E ${Math.round(pe)}x`;
+        if      (pe > 100) valuationLine = `${peStr} → ⚠️ 극단적 고평가 — 완벽한 실적 이상을 요구하는 밸류에이션`;
+        else if (pe > 50)  valuationLine = `${peStr} → 주의 — 높은 밸류에이션으로 실망 매물 가능성`;
+        else if (pe > 0)   valuationLine = `${peStr} → 적정 수준`;
+      }
+    }
 
     const hasDoc = !!textForPrompt;
     const prompt = `당신은 주식 공시 분석 전문가입니다.
