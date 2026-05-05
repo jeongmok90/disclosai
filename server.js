@@ -559,11 +559,23 @@ function extractFinancialSection(text, maxLen = 5000) {
 
 // ── 5대 주가 예측 변수 계산 ───────────────────────────────────────────────
 
+// FMP 캐시 (ticker별, 1시간 TTL) — 무료 티어 429 방지
+const _fmpCache = new Map();
+const FMP_CACHE_TTL = 60 * 60 * 1000; // 1시간
+
 // 1. NLP 감성 점수 (로컬 계산)
 // 0. FMP 컨센서스 + CAPEX + 밸류에이션 + 성장 둔화 (미국 주식 전용)
 async function fetchFmpData(ticker, filingDate) {
   const key = process.env.FMP_API_KEY;
   if (!key || !ticker) return null;
+
+  // 캐시 확인 (ticker 단위로 캐시 — 같은 종목 여러 공시 분석 시 재사용)
+  const cacheKey = ticker.toUpperCase();
+  const cached = _fmpCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < FMP_CACHE_TTL) {
+    return cached.data;
+  }
+
   try {
     const [earningsRes, cashflowRes, incomeRes, ratiosRes] = await Promise.all([
       axios.get(`https://financialmodelingprep.com/stable/earnings?symbol=${ticker}&apikey=${key}`, { timeout: 8000 }),
@@ -657,9 +669,14 @@ async function fetchFmpData(ticker, filingDate) {
       }
     }
 
-    return { consensusLine, capexLine, valuationLine, growthLine };
+    const result = { consensusLine, capexLine, valuationLine, growthLine };
+    _fmpCache.set(cacheKey, { data: result, ts: Date.now() });
+    return result;
   } catch (e) {
     console.warn('FMP 조회 실패:', e.message.slice(0, 60));
+    // 429 등 일시적 오류 → 이전 캐시 반환
+    const stale = _fmpCache.get(cacheKey);
+    if (stale) { console.log('[FMP] 캐시 폴백 사용:', cacheKey); return stale.data; }
     return null;
   }
 }
