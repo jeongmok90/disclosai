@@ -698,81 +698,98 @@ impact 작성 지침:
   }
 });
 
-// ── 유사 공시 주가 영향 조회 (Twelve Data) ────────────────────────────────
+// ── 네이버 fchart XML 파싱 (한국 주식/지수) ──────────────────────────────
+async function fetchNaverChart(symbol, count = 600) {
+  const { data } = await axios.get('https://fchart.stock.naver.com/sise.nhn', {
+    params: { symbol, timeframe: 'day', count, requestType: 0 },
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    timeout: 10000,
+    responseType: 'arraybuffer',
+  });
+  // EUC-KR 인코딩 → 날짜/숫자만 ASCII이므로 latin1로 디코딩해도 무관
+  const xml = Buffer.from(data).toString('latin1');
+  const items = [];
+  const re = /data="(\d{8})\|([^|]+)\|[^|]+\|[^|]+\|([^|]+)\|/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    // date: YYYYMMDD → YYYY-MM-DD, close: index 2
+    const d = m[1];
+    items.push({ date: `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`, close: parseFloat(m[3]) });
+  }
+  return items; // 오래된 순 (oldest-first)
+}
+
+// ── 유사 공시 주가 영향 조회 (KR: 네이버 / US: Twelve Data) ───────────────
 app.get('/api/price-impact', async (req, res) => {
   const { ticker, market, date } = req.query;
   if (!ticker || !date) return res.json({ status: 'no_params' });
-  if (!process.env.TWELVEDATA_API_KEY) return res.json({ status: 'no_key' });
 
-  const cacheKey = `price-${ticker}-${date}`;
+  const cacheKey = `price2-${ticker}-${date}`;
   const cached = getCache(cacheKey);
   if (cached) return res.json(cached);
 
   const isKorean = market === 'KOSPI' || market === 'KOSDAQ';
-  const base = new Date(date + 'T00:00:00Z');
-  const startDate = new Date(base.getTime() - 10 * 86400000).toISOString().slice(0, 10);
-  const endDate   = new Date(base.getTime() +  5 * 86400000).toISOString().slice(0, 10);
-
-  const fetchSeries = async (symbol, exchange) => {
-    const params = {
-      symbol,
-      interval: '1day',
-      start_date: startDate,
-      end_date: endDate,
-      apikey: process.env.TWELVEDATA_API_KEY,
-      format: 'JSON',
-    };
-    if (exchange) params.exchange = exchange;
-    const { data } = await axios.get('https://api.twelvedata.com/time_series', { params, timeout: 10000 });
-    if (data.status === 'error' || !Array.isArray(data.values)) return null;
-    // Twelve Data returns newest-first — reverse to oldest-first
-    return data.values.reverse();
-  };
 
   try {
-    const exchange    = isKorean ? 'KRX' : undefined;
-    const indexSymbol = isKorean ? 'KOSPI' : 'SPX';
-    const indexExch   = isKorean ? 'INDX' : 'INDX';
+    let stockVals, indexVals;
 
-    const [stockVals, indexVals] = await Promise.all([
-      fetchSeries(ticker, exchange),
-      fetchSeries(indexSymbol, indexExch).catch(() => null),
-    ]);
+    if (isKorean) {
+      // 네이버 fchart: 최근 600거래일 (약 2.4년)
+      [stockVals, indexVals] = await Promise.all([
+        fetchNaverChart(ticker, 600),
+        fetchNaverChart('KOSPI', 600).catch(() => null),
+      ]);
+    } else {
+      // Twelve Data: 미국 주식
+      if (!process.env.TWELVEDATA_API_KEY) return res.json({ status: 'no_key' });
+      const base = new Date(date + 'T00:00:00Z');
+      const startDate = new Date(base.getTime() - 10 * 86400000).toISOString().slice(0, 10);
+      const endDate   = new Date(base.getTime() +  5 * 86400000).toISOString().slice(0, 10);
+      const fetchTD = async (symbol) => {
+        const { data } = await axios.get('https://api.twelvedata.com/time_series', {
+          params: { symbol, interval: '1day', start_date: startDate, end_date: endDate,
+                    apikey: process.env.TWELVEDATA_API_KEY, format: 'JSON' },
+          timeout: 10000,
+        });
+        if (data.status === 'error' || !Array.isArray(data.values)) return null;
+        return data.values.reverse().map(v => ({ date: v.datetime, close: parseFloat(v.close) }));
+      };
+      [stockVals, indexVals] = await Promise.all([
+        fetchTD(ticker),
+        fetchTD('SPX').catch(() => null),
+      ]);
+    }
 
     if (!stockVals || stockVals.length < 2) return res.json({ status: 'no_data' });
 
-    // 공시일 기준 직전/직후 거래일 찾기
-    const filingDate = date; // 'YYYY-MM-DD'
-    let dayIdx = stockVals.findIndex(v => v.datetime >= filingDate);
+    // 공시일 기준 직전/직후 거래일 인덱스
+    let dayIdx = stockVals.findIndex(v => v.date >= date);
     if (dayIdx < 0) dayIdx = stockVals.length - 1;
     const beforeIdx = Math.max(0, dayIdx - 1);
     const afterIdx  = Math.min(stockVals.length - 1, dayIdx + 1);
 
-    const cBefore = parseFloat(stockVals[beforeIdx]?.close);
-    const cAfter  = parseFloat(stockVals[afterIdx]?.close);
+    const cBefore = stockVals[beforeIdx]?.close;
+    const cAfter  = stockVals[afterIdx]?.close;
     const priceChange = (cBefore && cAfter && beforeIdx !== afterIdx)
-      ? Math.round((cAfter - cBefore) / cBefore * 1000) / 10
-      : null;
+      ? Math.round((cAfter - cBefore) / cBefore * 1000) / 10 : null;
 
     let marketChange = null;
     if (indexVals && indexVals.length > afterIdx) {
-      const iBefore = parseFloat(indexVals[beforeIdx]?.close);
-      const iAfter  = parseFloat(indexVals[afterIdx]?.close);
+      const iBefore = indexVals[beforeIdx]?.close;
+      const iAfter  = indexVals[afterIdx]?.close;
       if (iBefore && iAfter && beforeIdx !== afterIdx)
         marketChange = Math.round((iAfter - iBefore) / iBefore * 1000) / 10;
     }
 
     const result = {
-      status: 'ok',
-      priceChange,
-      marketChange,
+      status: 'ok', priceChange, marketChange,
       relativeChange: (priceChange !== null && marketChange !== null)
         ? Math.round((priceChange - marketChange) * 10) / 10 : null,
     };
     setCache(cacheKey, result);
     res.json(result);
   } catch (err) {
-    console.warn('Twelve Data 조회 실패:', err.message.slice(0, 80));
+    console.warn('price-impact 조회 실패:', err.message.slice(0, 80));
     res.json({ status: 'error' });
   }
 });
