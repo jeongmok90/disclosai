@@ -752,6 +752,101 @@ async function fetchMacroContext(date) {
   } catch { return { vix: null, tnx: null, vixSignal: 'neutral', tnxSignal: 'neutral' }; }
 }
 
+// 2-b. 한국 매크로 (원/달러 환율 — FRED DEXKOUS, 키 불필요)
+async function fetchKoreanMacro(date) {
+  try {
+    const { data } = await axios.get(
+      'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXKOUS',
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000, responseType: 'text' }
+    );
+    const lines = data.trim().split('\n').slice(1);
+    let usdkrw = null;
+    for (const line of lines) {
+      const [d, v] = line.split(',');
+      if (d <= date && v && v.trim() !== '.') usdkrw = parseFloat(v);
+    }
+    if (!usdkrw) return null;
+
+    let comment;
+    if      (usdkrw >= 1450) comment = `⚠️ 원/달러 ${Math.round(usdkrw)}원 — 극단적 강달러: 수입원가 급등, 수출기업 환차익`;
+    else if (usdkrw >= 1350) comment = `원/달러 ${Math.round(usdkrw)}원 — 강달러: 수출기업 우호적, 내수·원자재 기업 비용 부담`;
+    else if (usdkrw <= 1150) comment = `원/달러 ${Math.round(usdkrw)}원 — 원화 강세: 수출기업 환차손 가능성`;
+    else                      comment = `원/달러 ${Math.round(usdkrw)}원 — 환율 안정 구간`;
+
+    return { usdkrw, comment };
+  } catch (e) {
+    console.warn('한국 매크로 조회 실패:', e.message.slice(0, 60));
+    return null;
+  }
+}
+
+// B. 공시 유형별 특화 수치 파싱 (DART 전용)
+function parseDartSpecific(text, filingType) {
+  if (!text || !filingType) return null;
+
+  const toNum = (s) => s ? parseInt(s.replace(/,/g, '')) : null;
+  const fmtWon = (n) => {
+    if (!n) return null;
+    if (n >= 100000000) return `${(n / 100000000).toFixed(1)}조원`;
+    if (n >= 10000)     return `${(n / 10000).toFixed(0)}억원`;
+    if (n >= 100)       return `${(n / 100).toFixed(0)}백만원`;
+    return `${n.toLocaleString()}원`;
+  };
+
+  // ── DART-수주: 수주금액 / 매출 대비 비율 / 발주처 / 계약기간 ──────────────
+  if (filingType === 'DART-수주') {
+    const amtM   = /계약금액[^0-9￦\₩]*([0-9,]+)/.exec(text);
+    const ratioM = /매출액\s*대비\s*\(?%?\)?\s*[│|]?\s*([0-9.]+)/.exec(text)
+                || /매출\s*대비[^0-9]*([0-9.]+)\s*%/.exec(text);
+    const clientM = /계약상대방[^가-힣A-Za-z\(（]*([가-힣A-Za-z0-9(（\)\）\s&.,]+?)(?:\s*[│|\n]|계약|$)/.exec(text);
+    const periodM = /계약기간[^0-9]*(\d{4}[.\-\/]\d{1,2}[.\-\/]\d{1,2}[^0-9\n]{1,5}\d{4}[.\-\/]\d{1,2}[.\-\/]\d{1,2})/.exec(text)
+                 || /납기[^0-9]*(\d{4}[.\-\/]\d{1,2}[.\-\/]\d{1,2})/.exec(text);
+
+    if (!amtM) return null;
+    const parts = [`계약금액 ${fmtWon(toNum(amtM[1]))}`];
+    if (ratioM) parts.push(`매출 대비 ${parseFloat(ratioM[1]).toFixed(1)}%`);
+    if (clientM) parts.push(`발주처: ${clientM[1].trim().replace(/\s+/g, ' ').slice(0, 25)}`);
+    if (periodM) parts.push(`기간: ${periodM[1].trim()}`);
+    return `[실제 데이터] ${parts.join(' / ')}`;
+  }
+
+  // ── DART-자본: 유상증자 or 자사주 취득 ────────────────────────────────────
+  if (filingType === 'DART-자본') {
+    const parts = [];
+    // 유상증자
+    const newSharesM  = /발행할\s*주식의?\s*수[^0-9]*([0-9,]+)/.exec(text)
+                     || /신주\s*(?:발행|배정)\s*주식수?[^0-9]*([0-9,]+)/.exec(text);
+    const issuePriceM = /(?:예정\s*)?발행가액?[^0-9]*([0-9,]+)/.exec(text);
+    const purposeM    = /(?:자금\s*조달의?\s*목적|발행\s*목적)[^\n]*\n?\s*([가-힣\w\s·,]+?)(?:[│|\n]|$)/.exec(text);
+    // 자사주
+    const buybackShareM = /취득\s*예정\s*주식\s*수?[^0-9]*([0-9,]+)/.exec(text);
+    const buybackAmtM   = /취득\s*예정\s*금액[^0-9]*([0-9,]+)/.exec(text);
+
+    if (newSharesM)    parts.push(`신주 ${toNum(newSharesM[1]).toLocaleString()}주 발행`);
+    if (issuePriceM)   parts.push(`발행가 ${toNum(issuePriceM[1]).toLocaleString()}원`);
+    if (buybackShareM) parts.push(`자사주 취득 ${toNum(buybackShareM[1]).toLocaleString()}주`);
+    if (buybackAmtM)   parts.push(`취득금액 ${fmtWon(toNum(buybackAmtM[1]))}`);
+    if (purposeM)      parts.push(`목적: ${purposeM[1].trim().slice(0, 20)}`);
+
+    return parts.length ? `[실제 데이터] ${parts.join(' / ')}` : null;
+  }
+
+  // ── DART-투자: 투자금액 / 대상 ────────────────────────────────────────────
+  if (filingType === 'DART-투자') {
+    const amtM    = /(?:투자|취득|출자)\s*금액[^0-9]*([0-9,]+)/.exec(text);
+    const targetM = /(?:투자|피투자|취득)\s*대상[^가-힣A-Za-z\(（]*([가-힣A-Za-z0-9(（\s]+?)(?:[│|\n]|$)/.exec(text);
+    const purposeM = /(?:투자|취득)\s*목적[^\n]*\n?\s*([가-힣\w\s·,]+?)(?:[│|\n]|$)/.exec(text);
+
+    if (!amtM) return null;
+    const parts = [`투자금액 ${fmtWon(toNum(amtM[1]))}`];
+    if (targetM) parts.push(`대상: ${targetM[1].trim().slice(0, 25)}`);
+    if (purposeM) parts.push(`목적: ${purposeM[1].trim().slice(0, 20)}`);
+    return `[실제 데이터] ${parts.join(' / ')}`;
+  }
+
+  return null;
+}
+
 // 3. 내부자 거래 신호 (EDGAR Form 4 — 공시일 기준 15일 내)
 async function fetchInsiderSignal(cikRaw, filingDate) {
   try {
@@ -863,15 +958,18 @@ app.post('/api/analyze/summary', async (req, res) => {
     const ticker = req.body.ticker || null;
     const market = req.body.market || '';
 
-    const [docText, macro, insider, fmp, momentum] = await Promise.all([
+    const [docText, macro, krMacro, insider, fmp, momentum] = await Promise.all([
       source === 'dart' && id
         ? fetchDartDocText(id)
         : source === 'edgar' && url
           ? fetchEdgarDocText(url, formType)
           : Promise.resolve(null),
-      source === 'edgar'   // 매크로(VIX·미국 금리)는 미국 기업 공시에만 의미 있음
+      source === 'edgar'   // 미국 매크로(VIX·금리)는 EDGAR 전용
         ? fetchMacroContext(date)
         : Promise.resolve({ vix: null, tnx: null, vixSignal: 'neutral', tnxSignal: 'neutral' }),
+      source === 'dart'    // 한국 매크로(원/달러)는 DART 전용
+        ? fetchKoreanMacro(date)
+        : Promise.resolve(null),
       source === 'edgar' && cikFromUrl
         ? fetchInsiderSignal(cikFromUrl, date)
         : Promise.resolve({ salesCount: 0, salesAmountM: 0, form4Count: 0, signal: 'neutral', detail: 'EDGAR 아님' }),
@@ -915,8 +1013,10 @@ app.post('/api/analyze/summary', async (req, res) => {
     const valuationLine = fmp?.valuationLine || null;
     const growthLine    = fmp?.growthLine    || null;
 
-    // DART 전용: 원문에서 재무 수치 파싱 (매출·영업이익·순이익 + YoY)
-    const dartFinLine = source === 'dart' ? parseDartFinancials(docText) : null;
+    // DART 전용: 원문 파싱 (재무수치 + 유형별 특화 수치)
+    const dartFinLine      = source === 'dart' ? parseDartFinancials(docText) : null;
+    const dartSpecificLine = source === 'dart' ? parseDartSpecific(docText, filingType) : null;
+    const krMacroLine      = krMacro?.comment || null;
 
     const hasDoc = !!textForPrompt;
     const prompt = `당신은 주식 공시 분석 전문가입니다.
@@ -930,14 +1030,17 @@ ${hasDoc ? `\n[공시 원문${isFullDoc ? ' — 전체' : ' — 핵심 섹션'}]
 ① 주요 재무실적: ${source === 'dart'
   ? (dartFinLine || '원문에서 매출·영업이익·당기순이익 수치와 전기 대비 증감률을 직접 추출하세요')
   : (fmp?.consensusLine ? `[실제 데이터] ${fmp.consensusLine}` : '원문에서 차기 가이던스와 컨센서스 대비 beat/miss를 직접 추출하세요')}
-② CAPEX 효율성: ${source === 'dart'
-  ? '원문에서 자본지출(설비투자) 규모와 매출 성장 대비 효율성을 직접 추출하세요'
-  : (fmp?.capexLine ? `[실제 데이터] ${fmp.capexLine} — 매출 성장률과 비교해 효율성을 평가하세요` : '원문에서 자본지출 증가율과 매출 성장률을 직접 추출·비교하세요')}
-③ ${nlpLine}${macroLine ? `\n④ ${macroLine}` : ''}${macroLine ? `\n⑤ ${insiderLine}` : `\n④ ${insiderLine}`}
+② 공시 핵심 수치: ${source === 'dart'
+  ? (dartSpecificLine || '원문에서 이 공시 유형의 핵심 수치를 직접 추출하세요')
+  : (fmp?.capexLine ? `[실제 데이터] ${fmp.capexLine}` : '원문에서 자본지출 증가율과 매출 성장률을 직접 추출하세요')}
+③ ${nlpLine}
+④ 매크로: ${source === 'dart'
+  ? (krMacroLine || '환율 데이터 없음')
+  : (macroLine || '매크로 데이터 없음')}
 ━━━ 과열·하방 리스크 지표 ━━━
-⑥ 공시 전 모멘텀: ${momentumLine || '데이터 없음'}
-⑦ 밸류에이션: ${valuationLine || '데이터 없음'}
-⑧ 성장 추이: ${growthLine || '데이터 없음'}
+⑤ 공시 전 모멘텀: ${momentumLine || '데이터 없음'}
+⑥ 밸류에이션: ${valuationLine || '데이터 없음'}
+⑦ 성장 추이: ${growthLine || '데이터 없음'}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 핵심 추출 항목:
@@ -951,14 +1054,15 @@ ${typeInstruction}
 - score는 8개 변수를 종합한 -100~100 정수
 
 impact 작성 지침:
-위 8개 변수 중 이 공시에서 실질적으로 주가에 영향을 줄 것으로 판단되는 변수만 골라 2~4문장으로 작성하세요.
+위 변수 중 이 공시에서 실질적으로 주가에 영향을 줄 것으로 판단되는 변수만 골라 2~4문장으로 작성하세요.
 판단 기준:
-- 가이던스·CAPEX: [실제 데이터]가 있으면 반드시 포함
+- 재무실적·핵심 수치: [실제 데이터]가 있으면 반드시 포함
 - NLP 감성: 부정/긍정 단어 비율 차이가 1.5배 이상일 때만
-${macroLine ? '- 매크로: VIX > 25이거나 금리 > 4.5% 또는 < 3.5%일 때만' : ''}
-- 내부자 거래: 매도 금액이 $1M 이상일 때만
-- 공시 전 모멘텀: ⚠️ 표시가 있으면 반드시 포함 — "실적은 양호하나 이미 주가에 반영된 기대치가 높아 단기 차익 실현 압력 가능성" 명시
-- 밸류에이션: ⚠️ 극단적 고평가 표시 시 반드시 포함 — "높은 밸류에이션 부담으로 조금이라도 기대에 미치지 못하면 급락 가능"
+${source === 'dart'
+  ? `- 환율: ⚠️ 표시 있을 때만. 수출 비중 높은 기업(반도체·자동차·조선)은 강달러 수혜, 원자재 수입 비중 높은 기업은 비용 부담으로 연결`
+  : `- 매크로: VIX > 25이거나 금리 > 4.5% 또는 < 3.5%일 때만\n- 내부자 거래: 매도 금액이 $1M 이상일 때만`}
+- 공시 전 모멘텀: ⚠️ 표시가 있으면 반드시 포함
+- 밸류에이션: ⚠️ 극단적 고평가 표시 시 반드시 포함
 - 성장 추이: 성장 둔화 표시 시 포함
 기준 미달 변수는 언급하지 마세요.
 
