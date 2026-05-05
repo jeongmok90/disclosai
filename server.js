@@ -760,7 +760,9 @@ app.post('/api/analyze/summary', async (req, res) => {
         : source === 'edgar' && url
           ? fetchEdgarDocText(url, formType)
           : Promise.resolve(null),
-      fetchMacroContext(date),
+      source === 'edgar'   // 매크로(VIX·미국 금리)는 미국 기업 공시에만 의미 있음
+        ? fetchMacroContext(date)
+        : Promise.resolve({ vix: null, tnx: null, vixSignal: 'neutral', tnxSignal: 'neutral' }),
       source === 'edgar' && cikFromUrl
         ? fetchInsiderSignal(cikFromUrl, date)
         : Promise.resolve({ salesCount: 0, salesAmountM: 0, form4Count: 0, signal: 'neutral', detail: 'EDGAR 아님' }),
@@ -788,9 +790,12 @@ app.post('/api/analyze/summary', async (req, res) => {
     const nlpLine     = nlp
       ? `NLP 감성: 부정 ${nlp.negCount}개(${nlp.negRate}/천단어) / 긍정 ${nlp.posCount}개(${nlp.posRate}/천단어)`
       : 'NLP 감성: 원문 없음';
-    const macroLine   = macro.vix != null
-      ? `매크로: VIX ${macro.vix}, 미국 10년물 ${macro.tnx}%`
-      : '매크로: 조회 실패';
+    // 매크로는 미국 기업(Edgar)에만 적용 — 국내 기업엔 포함하지 않음
+    const macroLine   = source === 'edgar'
+      ? (macro.vix != null
+          ? `매크로: VIX ${macro.vix}, 미국 10년물 ${macro.tnx}%`
+          : '매크로: 조회 실패')
+      : null;
     const insiderLine = insider.salesCount > 0
       ? `내부자 거래: ${insider.detail}`
       : insider.form4Count > 0
@@ -809,12 +814,10 @@ app.post('/api/analyze/summary', async (req, res) => {
 공시 유형: ${filingType}
 공시 제목: ${title}
 ${hasDoc ? `\n[공시 원문${isFullDoc ? ' — 전체' : ' — 핵심 섹션'}]\n${textForPrompt}\n` : '\n(원문 미확보 — 제목·유형 기반 분석)\n'}
-━━━ 5대 주가 예측 변수 ━━━
+━━━ 주가 예측 변수 ━━━
 ① 가이던스 이격도: ${fmp?.consensusLine ? `[실제 데이터] ${fmp.consensusLine}` : '원문에서 차기 가이던스와 컨센서스 대비 beat/miss를 직접 추출하세요'}
 ② CAPEX 효율성: ${fmp?.capexLine ? `[실제 데이터] ${fmp.capexLine} — 매출 성장률과 비교해 효율성을 평가하세요` : '원문에서 자본지출 증가율과 매출 성장률을 직접 추출·비교하세요'}
-③ ${nlpLine}
-④ ${macroLine}
-⑤ ${insiderLine}
+③ ${nlpLine}${macroLine ? `\n④ ${macroLine}` : ''}${macroLine ? `\n⑤ ${insiderLine}` : `\n④ ${insiderLine}`}
 ━━━ 과열·하방 리스크 지표 ━━━
 ⑥ 공시 전 모멘텀: ${momentumLine || '데이터 없음'}
 ⑦ 밸류에이션: ${valuationLine || '데이터 없음'}
@@ -836,7 +839,7 @@ impact 작성 지침:
 판단 기준:
 - 가이던스·CAPEX: [실제 데이터]가 있으면 반드시 포함
 - NLP 감성: 부정/긍정 단어 비율 차이가 1.5배 이상일 때만
-- 매크로: VIX > 25이거나 금리 > 4.5% 또는 < 3.5%일 때만
+${macroLine ? '- 매크로: VIX > 25이거나 금리 > 4.5% 또는 < 3.5%일 때만' : ''}
 - 내부자 거래: 매도 금액이 $1M 이상일 때만
 - 공시 전 모멘텀: ⚠️ 표시가 있으면 반드시 포함 — "실적은 양호하나 이미 주가에 반영된 기대치가 높아 단기 차익 실현 압력 가능성" 명시
 - 밸류에이션: ⚠️ 극단적 고평가 표시 시 반드시 포함 — "높은 밸류에이션 부담으로 조금이라도 기대에 미치지 못하면 급락 가능"
