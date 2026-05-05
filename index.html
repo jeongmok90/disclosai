@@ -943,15 +943,19 @@ async function loadSimilarFilings(filing) {
       .then(r => r.json())
       .then(impact => ({
         id: f.id, company: f.company, date: f.date, title: f.title,
-        priceChange: impact.priceChange,
-        marketChange: impact.marketChange,
-        relativeChange: impact.relativeChange,
+        priceChange: impact.status === 'ok' ? impact.priceChange : null,
+        marketChange: impact.status === 'ok' ? impact.marketChange : null,
+        relativeChange: impact.status === 'ok' ? impact.relativeChange : null,
         status: impact.status,
+      }))
+      .catch(() => ({
+        id: f.id, company: f.company, date: f.date, title: f.title,
+        priceChange: null, marketChange: null, relativeChange: null, status: 'error',
       }));
   }));
 
   const data = results
-    .filter(r => r.status === 'fulfilled' && r.value.status === 'ok')
+    .filter(r => r.status === 'fulfilled')
     .map(r => r.value);
 
   const historical = data.length > 0 ? data : null;
