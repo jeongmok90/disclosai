@@ -235,6 +235,107 @@ app.get('/api/filings/edgar', async (req, res) => {
 // ── 원문 텍스트 추출 헬퍼 ─────────────────────────────────────────────────
 const AdmZip = require('adm-zip');
 
+// DART HTML에서 한국어 재무 테이블 추출
+function extractFinancialTablesFromHtmlKR(html, maxLen = 6000) {
+  if (!html) return null;
+  const FINANCIAL_RE = /매출|영업이익|당기순이익|영업수익|손익|재무/;
+  const HAS_NUMBERS_RE = /[\d,]{4,}/;
+
+  function cellText(cellHtml) {
+    return cellHtml
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ').replace(/&#\d+;/g, ' ').replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ').trim();
+  }
+  function tableToText(tableHtml) {
+    const rows = [];
+    for (const rowM of tableHtml.matchAll(/<tr[\s\S]*?<\/tr>/gi)) {
+      const cells = [];
+      for (const cellM of rowM[0].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)) {
+        const t = cellText(cellM[1]);
+        if (t) cells.push(t);
+      }
+      if (cells.length > 0) rows.push(cells.join('  |  '));
+    }
+    return rows.join('\n');
+  }
+
+  const results = [];
+  for (const m of html.matchAll(/<table[\s\S]*?<\/table>/gi)) {
+    const tableHtml = m[0];
+    if (!FINANCIAL_RE.test(tableHtml)) continue;
+    const text = tableToText(tableHtml);
+    if (text.length < 100 || !HAS_NUMBERS_RE.test(text)) continue;
+    results.push(text);
+    if (results.join('\n\n').length > maxLen) break;
+  }
+  if (results.length === 0) return null;
+  return results.join('\n\n---\n\n').slice(0, maxLen);
+}
+
+// DART 문서 텍스트에서 핵심 재무 수치 추출 (매출·영업이익·순이익 + YoY)
+function parseDartFinancials(text) {
+  if (!text) return null;
+
+  // 단위 파악 (기본: 백만원)
+  let scale = 1; // 결과를 백만원 단위로 통일
+  if (/단위\s*[:：]\s*천\s*원/.test(text))       scale = 0.001;
+  else if (/단위\s*[:：]\s*억\s*원/.test(text))  scale = 100;
+  else if (/단위\s*[:：]\s*원(?!\s*미만)/.test(text) && !/백만/.test(text)) scale = 0.000001;
+  // 백만원이면 scale = 1 그대로
+
+  const parseNum = (s) => {
+    if (!s) return null;
+    // △ 또는 (숫자) 형식은 음수
+    let neg = false;
+    if (/^△/.test(s.trim()) || /^\([\d,]+\)$/.test(s.trim())) neg = true;
+    const n = parseFloat(s.replace(/[△(),]/g, '').replace(/,/g, '').trim());
+    return isNaN(n) ? null : (neg ? -n : n) * scale;
+  };
+
+  // 항목 | 당기 숫자 | 전기 숫자 패턴 (파이프 구분 또는 공백 구분 모두 허용)
+  const findMetric = (patterns) => {
+    for (const pat of patterns) {
+      const re = new RegExp(
+        pat + '[\\s│\\|]*([△(]?[\\d,]+[)]?)' +
+        '(?:[\\s│\\|]+([△(]?[\\d,]+[)]?))?',
+        'i'
+      );
+      const m = re.exec(text);
+      if (m) return { cur: parseNum(m[1]), prev: parseNum(m[2]) || null };
+    }
+    return null;
+  };
+
+  const rev  = findMetric(['매출액', '영업수익', '수익\\s*\\(매출액\\)']);
+  const op   = findMetric(['영업이익']);
+  const ni   = findMetric(['당기순이익(?!\\s*\\()']);
+
+  if (!rev && !op && !ni) return null;
+
+  const fmt = (n) => {
+    if (n == null) return null;
+    const abs = Math.abs(n);
+    const sign = n < 0 ? '-' : '';
+    if (abs >= 1000000) return `${sign}${(abs / 1000000).toFixed(2)}조원`;
+    if (abs >= 10000)   return `${sign}${(abs / 10000).toFixed(0)}억원`;
+    return `${sign}${Math.round(abs)}백만원`;
+  };
+
+  const yoy = (cur, prev) => {
+    if (cur == null || prev == null || prev === 0) return '';
+    const r = Math.round((cur - prev) / Math.abs(prev) * 1000) / 10;
+    return ` (YoY ${r > 0 ? '+' : ''}${r}%)`;
+  };
+
+  const parts = [];
+  if (rev?.cur  != null) parts.push(`매출액 ${fmt(rev.cur)}${yoy(rev.cur, rev.prev)}`);
+  if (op?.cur   != null) parts.push(`영업이익 ${fmt(op.cur)}${yoy(op.cur, op.prev)}`);
+  if (ni?.cur   != null) parts.push(`당기순이익 ${fmt(ni.cur)}${yoy(ni.cur, ni.prev)}`);
+
+  return parts.length > 0 ? `[실제 데이터] ${parts.join(' / ')}` : null;
+}
+
 async function fetchDartDocText(rcept_no) {
   try {
     const { data } = await axios.get('https://opendart.fss.or.kr/api/document.xml', {
@@ -246,9 +347,17 @@ async function fetchDartDocText(rcept_no) {
     const entries = zip.getEntries().sort((a, b) => b.header.size - a.header.size);
     const entry = entries.find(e => /\.(html?|xml)$/i.test(e.entryName));
     if (!entry) return null;
-    const text = entry.getData().toString('utf8')
+
+    const rawHtml = entry.getData().toString('utf8')
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+
+    // 재무 테이블 우선 추출 (구조화된 수치 보존)
+    const tableText = extractFinancialTablesFromHtmlKR(rawHtml);
+    if (tableText && tableText.length > 300) return tableText;
+
+    // fallback: 일반 텍스트
+    const text = rawHtml
       .replace(/<[^>]+>/g, ' ')
       .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
       .replace(/\s+/g, ' ').trim();
@@ -806,6 +915,9 @@ app.post('/api/analyze/summary', async (req, res) => {
     const valuationLine = fmp?.valuationLine || null;
     const growthLine    = fmp?.growthLine    || null;
 
+    // DART 전용: 원문에서 재무 수치 파싱 (매출·영업이익·순이익 + YoY)
+    const dartFinLine = source === 'dart' ? parseDartFinancials(docText) : null;
+
     const hasDoc = !!textForPrompt;
     const prompt = `당신은 주식 공시 분석 전문가입니다.
 
@@ -815,8 +927,12 @@ app.post('/api/analyze/summary', async (req, res) => {
 공시 제목: ${title}
 ${hasDoc ? `\n[공시 원문${isFullDoc ? ' — 전체' : ' — 핵심 섹션'}]\n${textForPrompt}\n` : '\n(원문 미확보 — 제목·유형 기반 분석)\n'}
 ━━━ 주가 예측 변수 ━━━
-① 가이던스 이격도: ${fmp?.consensusLine ? `[실제 데이터] ${fmp.consensusLine}` : '원문에서 차기 가이던스와 컨센서스 대비 beat/miss를 직접 추출하세요'}
-② CAPEX 효율성: ${fmp?.capexLine ? `[실제 데이터] ${fmp.capexLine} — 매출 성장률과 비교해 효율성을 평가하세요` : '원문에서 자본지출 증가율과 매출 성장률을 직접 추출·비교하세요'}
+① 주요 재무실적: ${source === 'dart'
+  ? (dartFinLine || '원문에서 매출·영업이익·당기순이익 수치와 전기 대비 증감률을 직접 추출하세요')
+  : (fmp?.consensusLine ? `[실제 데이터] ${fmp.consensusLine}` : '원문에서 차기 가이던스와 컨센서스 대비 beat/miss를 직접 추출하세요')}
+② CAPEX 효율성: ${source === 'dart'
+  ? '원문에서 자본지출(설비투자) 규모와 매출 성장 대비 효율성을 직접 추출하세요'
+  : (fmp?.capexLine ? `[실제 데이터] ${fmp.capexLine} — 매출 성장률과 비교해 효율성을 평가하세요` : '원문에서 자본지출 증가율과 매출 성장률을 직접 추출·비교하세요')}
 ③ ${nlpLine}${macroLine ? `\n④ ${macroLine}` : ''}${macroLine ? `\n⑤ ${insiderLine}` : `\n④ ${insiderLine}`}
 ━━━ 과열·하방 리스크 지표 ━━━
 ⑥ 공시 전 모멘텀: ${momentumLine || '데이터 없음'}
