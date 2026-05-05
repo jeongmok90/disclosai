@@ -942,6 +942,10 @@ function getTypeInstruction(filingType) {
   return map[filingType] || map['8-K-기타'];
 }
 
+// ── 분석 결과 캐시 (공시별, 24시간 TTL) — 동시 접속 시 Gemini 중복 호출 방지 ──
+const _analysisCache = new Map();
+const ANALYSIS_CACHE_TTL = 24 * 60 * 60 * 1000; // 24시간
+
 // ── Gemini AI 요약 + 영향 분석 ────────────────────────────────────────────
 app.post('/api/analyze/summary', async (req, res) => {
   const { title, company, source, date, id, url } = req.body;
@@ -952,6 +956,13 @@ app.post('/api/analyze/summary', async (req, res) => {
       summary: `[Gemini API 키 미설정] aistudio.google.com에서 무료 발급 후 .env에 입력하세요.`,
       sentiment: 'neutral', score: 0, factors: [], impact: '',
     });
+  }
+
+  // 캐시 키: 공시 고유 ID 또는 URL, 없으면 company+date+title 해시
+  const cacheKey = id || url || `${company}__${date}__${title}`;
+  const cached = _analysisCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < ANALYSIS_CACHE_TTL) {
+    return res.json({ status: 'ok', ...cached.data, _cached: true });
   }
 
   try {
@@ -1099,9 +1110,19 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
   "impact": "주가 영향 분석. 한국어."
 }`;
 
-    const model  = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const result = await model.generateContent(prompt);
-    const raw    = result.response.text();
+    // gemini-2.0-flash 우선, 실패 시 gemini-1.5-flash fallback
+    let raw;
+    for (const modelName of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName });
+        const result = await model.generateContent(prompt);
+        raw = result.response.text();
+        break;
+      } catch (e) {
+        if (modelName === 'gemini-1.5-flash') throw e; // 둘 다 실패 시 상위 catch로
+        console.warn(`[Gemini] ${modelName} 실패, fallback 시도:`, e.message.slice(0, 60));
+      }
+    }
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
 
     if (jsonMatch) {
@@ -1139,6 +1160,9 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
       if (warnings.length > 0) {
         parsed.impact = warnings.join(' ') + (parsed.impact ? ' ' + parsed.impact : '');
       }
+
+      // 분석 결과 캐시 저장
+      _analysisCache.set(cacheKey, { data: parsed, ts: Date.now() });
 
       res.json({ status: 'ok', ...parsed });
     } else {
