@@ -918,9 +918,10 @@ function toggleCard(id, forceOpen=false) {
 
 // ── 유사 공시 비교 로딩 ───────────────────────────────────────────────────
 async function loadSimilarFilings(filing) {
+  const fallback = allFilings.filter(f => !f._loading && f.market === filing.market);
   const pool = filing.market === 'kr'
-    ? (window._allDart || [])
-    : (window._allEdgar || []);
+    ? (window._allDart?.length ? window._allDart : fallback)
+    : (window._allEdgar?.length ? window._allEdgar : fallback);
 
   const similar = pool
     .filter(f => f.company === filing.company && f.type === filing.type && f.id !== filing.id)
