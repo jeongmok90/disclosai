@@ -451,18 +451,19 @@ function extractFinancialSection(text, maxLen = 5000) {
 // ── 5대 주가 예측 변수 계산 ───────────────────────────────────────────────
 
 // 1. NLP 감성 점수 (로컬 계산)
-// 0. FMP 컨센서스 + CAPEX 데이터 (미국 주식 전용)
+// 0. FMP 컨센서스 + CAPEX + 밸류에이션 + 성장 둔화 (미국 주식 전용)
 async function fetchFmpData(ticker, filingDate) {
   const key = process.env.FMP_API_KEY;
   if (!key || !ticker) return null;
   try {
-    const [earningsRes, cashflowRes, incomeRes] = await Promise.all([
+    const [earningsRes, cashflowRes, incomeRes, ratiosRes] = await Promise.all([
       axios.get(`https://financialmodelingprep.com/stable/earnings?symbol=${ticker}&apikey=${key}`, { timeout: 8000 }),
       axios.get(`https://financialmodelingprep.com/stable/cash-flow-statement?symbol=${ticker}&period=quarter&limit=5&apikey=${key}`, { timeout: 8000 }),
       axios.get(`https://financialmodelingprep.com/stable/income-statement?symbol=${ticker}&period=quarter&limit=5&apikey=${key}`, { timeout: 8000 }),
+      axios.get(`https://financialmodelingprep.com/stable/ratios-ttm?symbol=${ticker}&apikey=${key}`, { timeout: 8000 }),
     ]);
 
-    // 1. 어닝 서프라이즈: 공시일과 가장 가까운 실적 찾기
+    // 1. 어닝 서프라이즈
     const earnings = (earningsRes.data || []).filter(e => e.epsActual != null && e.date <= filingDate);
     const latest = earnings[0] || null;
     let consensusLine = null;
@@ -483,7 +484,7 @@ async function fetchFmpData(ticker, filingDate) {
       if (parts.length) consensusLine = parts.join(' / ');
     }
 
-    // 2. CAPEX 효율성: 최근 2분기 CAPEX 증감률 + 매출 대비 비율
+    // 2. CAPEX 효율성
     const cashflows = cashflowRes.data || [];
     const incomes = incomeRes.data || [];
     let capexLine = null;
@@ -501,9 +502,94 @@ async function fetchFmpData(ticker, filingDate) {
       }
     }
 
-    return { consensusLine, capexLine };
+    // 3. 밸류에이션 과열 지표
+    const ratios = Array.isArray(ratiosRes.data) ? ratiosRes.data[0] : ratiosRes.data;
+    let valuationLine = null;
+    const pe  = ratios?.priceToEarningsRatioTTM;
+    const ps  = ratios?.priceToSalesRatioTTM;
+    const pb  = ratios?.priceToBookRatioTTM;
+    if (pe || ps) {
+      const parts = [];
+      if (pe)  parts.push(`P/E ${Math.round(pe)}x`);
+      if (ps)  parts.push(`P/S ${Math.round(ps)}x`);
+      if (pb)  parts.push(`P/B ${Math.round(pb)}x`);
+      const risk = (pe > 100 || ps > 20)
+        ? '⚠️ 극단적 고평가 — 완벽한 실적 이상을 요구하는 밸류에이션'
+        : (pe > 50 || ps > 10)
+          ? '주의 — 높은 밸류에이션으로 실망 매물 가능성'
+          : '적정 수준';
+      valuationLine = `${parts.join(', ')} → ${risk}`;
+    }
+
+    // 4. 매출 성장률 둔화 감지 (최근 3~4분기 YoY 성장률 추이)
+    let growthLine = null;
+    if (incomes.length >= 4) {
+      // QoQ 성장률 계산 (최근 3분기)
+      const growthRates = [];
+      for (let i = 0; i < Math.min(3, incomes.length - 1); i++) {
+        const cur  = incomes[i]?.revenue;
+        const prev = incomes[i + 1]?.revenue;
+        if (cur && prev && prev > 0) {
+          growthRates.push(Math.round((cur - prev) / prev * 1000) / 10);
+        }
+      }
+      if (growthRates.length >= 2) {
+        const trend = growthRates[0] - growthRates[growthRates.length - 1]; // 최신 - 가장 오래된
+        const rateStr = growthRates.map(r => `${r > 0 ? '+' : ''}${r}%`).join(' → ');
+        if (trend < -3) {
+          growthLine = `매출 성장률 둔화: QoQ ${rateStr} — 성장 모멘텀 약화 중`;
+        } else if (trend > 3) {
+          growthLine = `매출 성장률 가속: QoQ ${rateStr} — 성장 모멘텀 강화`;
+        } else {
+          growthLine = `매출 성장률 안정: QoQ ${rateStr}`;
+        }
+      }
+    }
+
+    return { consensusLine, capexLine, valuationLine, growthLine };
   } catch (e) {
     console.warn('FMP 조회 실패:', e.message.slice(0, 60));
+    return null;
+  }
+}
+
+// 0-b. 공시 전 30일 주가 모멘텀
+async function fetchMomentum30(ticker, market, filingDate) {
+  try {
+    const isKorean = market === 'KOSPI' || market === 'KOSDAQ';
+    const filing = new Date(filingDate + 'T00:00:00Z');
+    const from   = new Date(filing.getTime() - 40 * 86400000).toISOString().slice(0, 10);
+
+    let prices = [];
+    if (isKorean) {
+      const all = await fetchNaverChart(ticker, 100);
+      prices = all.filter(p => p.date >= from && p.date <= filingDate);
+    } else {
+      if (!process.env.TWELVEDATA_API_KEY) return null;
+      const { data } = await axios.get('https://api.twelvedata.com/time_series', {
+        params: { symbol: ticker, interval: '1day', start_date: from, end_date: filingDate,
+                  apikey: process.env.TWELVEDATA_API_KEY, format: 'JSON' },
+        timeout: 8000,
+      });
+      if (data.status === 'error' || !Array.isArray(data.values)) return null;
+      prices = data.values.reverse().map(v => ({ date: v.datetime, close: parseFloat(v.close) }));
+    }
+
+    if (prices.length < 5) return null;
+    const first = prices[0].close;
+    const last  = prices[prices.length - 1].close;
+    const ret30 = Math.round((last - first) / first * 1000) / 10;
+
+    let signal = 'neutral';
+    let comment = '';
+    if (ret30 >= 20) { signal = 'warning'; comment = `⚠️ 공시 전 30일 +${ret30}% 급등 — 기대감 이미 상당 부분 반영, 실망 매물 위험`; }
+    else if (ret30 >= 10) { signal = 'caution'; comment = `주의: 공시 전 30일 +${ret30}% — 일부 기대감 선반영`; }
+    else if (ret30 <= -10) { signal = 'positive'; comment = `공시 전 30일 ${ret30}% 하락 — 낮아진 기대치로 서프라이즈 여지`; }
+    else { comment = `공시 전 30일 수익률 ${ret30 > 0 ? '+' : ''}${ret30}% — 중립적 모멘텀`; }
+
+    return { ret30, signal, comment };
+  } catch (e) {
+    console.warn('모멘텀 조회 실패:', e.message.slice(0, 60));
     return null;
   }
 }
@@ -666,8 +752,9 @@ app.post('/api/analyze/summary', async (req, res) => {
     const formType   = (title.match(/\[(10-[QK]|8-K)\]/) || [])[1] || '';
 
     const ticker = req.body.ticker || null;
+    const market = req.body.market || '';
 
-    const [docText, macro, insider, fmp] = await Promise.all([
+    const [docText, macro, insider, fmp, momentum] = await Promise.all([
       source === 'dart' && id
         ? fetchDartDocText(id)
         : source === 'edgar' && url
@@ -679,6 +766,9 @@ app.post('/api/analyze/summary', async (req, res) => {
         : Promise.resolve({ salesCount: 0, salesAmountM: 0, form4Count: 0, signal: 'neutral', detail: 'EDGAR 아님' }),
       source === 'edgar' && ticker
         ? fetchFmpData(ticker, date)
+        : Promise.resolve(null),
+      ticker
+        ? fetchMomentum30(ticker, market, date)
         : Promise.resolve(null),
     ]);
 
@@ -707,6 +797,10 @@ app.post('/api/analyze/summary', async (req, res) => {
         ? `내부자 거래: Form 4 ${insider.form4Count}건 제출 (매도 없음)`
         : '내부자 거래: 15일 내 없음';
 
+    const momentumLine  = momentum?.comment || null;
+    const valuationLine = fmp?.valuationLine || null;
+    const growthLine    = fmp?.growthLine    || null;
+
     const hasDoc = !!textForPrompt;
     const prompt = `당신은 주식 공시 분석 전문가입니다.
 
@@ -721,6 +815,10 @@ ${hasDoc ? `\n[공시 원문${isFullDoc ? ' — 전체' : ' — 핵심 섹션'}]
 ③ ${nlpLine}
 ④ ${macroLine}
 ⑤ ${insiderLine}
+━━━ 과열·하방 리스크 지표 ━━━
+⑥ 공시 전 모멘텀: ${momentumLine || '데이터 없음'}
+⑦ 밸류에이션: ${valuationLine || '데이터 없음'}
+⑧ 성장 추이: ${growthLine || '데이터 없음'}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 핵심 추출 항목:
@@ -730,17 +828,19 @@ ${typeInstruction}
 - [실제 데이터] 표시 항목은 해당 수치를 반드시 impact에 활용하세요
 - 원문에 있는 실제 수치만 인용하세요 (수치 생성 금지)
 - 수치 미기재 시 "미기재"로 표시
-- score는 5대 변수를 종합한 -100~100 정수
+- score는 8개 변수를 종합한 -100~100 정수
 
 impact 작성 지침:
-위 5대 변수 중 이 공시에서 실질적으로 주가에 영향을 줄 것으로 판단되는 변수만 골라 2~3문장으로 작성하세요.
+위 8개 변수 중 이 공시에서 실질적으로 주가에 영향을 줄 것으로 판단되는 변수만 골라 2~4문장으로 작성하세요.
 판단 기준:
-- 가이던스·CAPEX: [실제 데이터]가 있으면 반드시 포함. 없을 경우 원문에서 수치 확인 시만
+- 가이던스·CAPEX: [실제 데이터]가 있으면 반드시 포함
 - NLP 감성: 부정/긍정 단어 비율 차이가 1.5배 이상일 때만
 - 매크로: VIX > 25이거나 금리 > 4.5% 또는 < 3.5%일 때만
 - 내부자 거래: 매도 금액이 $1M 이상일 때만
-위 기준에 해당하는 변수가 없으면 공시 내용만으로 2~3문장을 작성하세요.
-기준 미달 변수는 언급조차 하지 마세요.
+- 공시 전 모멘텀: ⚠️ 표시가 있으면 반드시 포함 — "실적은 양호하나 이미 주가에 반영된 기대치가 높아 단기 차익 실현 압력 가능성" 명시
+- 밸류에이션: ⚠️ 극단적 고평가 표시 시 반드시 포함 — "높은 밸류에이션 부담으로 조금이라도 기대에 미치지 못하면 급락 가능"
+- 성장 추이: 성장 둔화 표시 시 포함
+기준 미달 변수는 언급하지 마세요.
 
 코드블록 없이 순수 JSON만 출력하세요:
 {
