@@ -843,9 +843,17 @@ impact 작성 지침:
 - 성장 추이: 성장 둔화 표시 시 포함
 기준 미달 변수는 언급하지 마세요.
 
+⚠️ summary 필드 엄격 규칙:
+summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
+다음 표현은 summary에 절대 등장해서는 안 됩니다:
+- "예상됩니다", "전망됩니다", "기대됩니다"
+- "변동성", "주가", "시장 반응", "투자자", "매수/매도"
+- "~할 것으로", "~가능성", "~우려", "~기대"
+이러한 표현은 오직 impact 필드에만 사용하세요.
+
 코드블록 없이 순수 JSON만 출력하세요:
 {
-  "summary": "공시 내용만 3~5문장으로 요약. 실제 수치 포함. 한국어. ※ 주가 전망·예측·상승·하락 가능성 등 미래 주가에 관한 언급 절대 금지 — 오직 공시에서 밝힌 사실만 기술.",
+  "summary": "공시에서 발표한 수치와 사실만 3~5문장. 예측·전망·주가 관련 표현 완전 배제.",
   "sentiment": "positive 또는 negative 또는 neutral",
   "score": 정수,
   "factors": ["핵심 요인 3개, 수치 포함"],
@@ -858,7 +866,17 @@ impact 작성 지침:
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
 
     if (jsonMatch) {
-      res.json({ status: 'ok', ...JSON.parse(jsonMatch[0]) });
+      const parsed = JSON.parse(jsonMatch[0]);
+      // summary에서 예측·전망 문장 제거 (마지막 문장이 주가 관련이면 삭제)
+      if (parsed.summary) {
+        const PREDICT_PATTERN = /(?:예상|전망|기대|변동성|주가|투자자|매수|매도|가능성|우려|상승|하락|반영).{0,15}(?:됩니다|됩니다\.|입니다\.|있습니다\.)$/;
+        const sentences = parsed.summary.split(/(?<=[.。])\s+/);
+        const filtered = sentences.filter(s => !PREDICT_PATTERN.test(s.trim()));
+        if (filtered.length < sentences.length) {
+          parsed.summary = filtered.join(' ').trim();
+        }
+      }
+      res.json({ status: 'ok', ...parsed });
     } else {
       res.json({ status: 'ok', summary: raw, sentiment: 'neutral', score: 0, factors: [], impact: '' });
     }
