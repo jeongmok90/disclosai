@@ -1090,7 +1090,8 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
 
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
-      // summary에서 예측·전망 문장 제거 (마지막 문장이 주가 관련이면 삭제)
+
+      // ── summary에서 예측·전망 문장 제거 ─────────────────────────────────
       if (parsed.summary) {
         const PREDICT_PATTERN = /(?:예상|전망|기대|변동성|주가|투자자|매수|매도|가능성|우려|상승|하락|반영).{0,15}(?:됩니다|됩니다\.|입니다\.|있습니다\.)$/;
         const sentences = parsed.summary.split(/(?<=[.。])\s+/);
@@ -1099,6 +1100,30 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
           parsed.summary = filtered.join(' ').trim();
         }
       }
+
+      // ── ⚠️ 리스크 경고 강제 삽입 (AI가 무시해도 impact 앞에 붙임) ────────
+      const warnings = [];
+
+      // 밸류에이션 극단적 고평가
+      if (valuationLine && valuationLine.includes('⚠️')) {
+        const alreadyMentioned = parsed.impact && /밸류에이션|고평가|P\/E|P\/S/.test(parsed.impact);
+        if (!alreadyMentioned) {
+          warnings.push(`⚠️ 밸류에이션 경고: ${valuationLine} — 실적이 좋더라도 높은 기대치가 이미 주가에 반영돼 있어 차익 실현 압력이 발생할 수 있습니다.`);
+        }
+      }
+
+      // 공시 전 모멘텀 과열
+      if (momentumLine && momentumLine.includes('⚠️')) {
+        const alreadyMentioned = parsed.impact && /모멘텀|급등|선반영|차익/.test(parsed.impact);
+        if (!alreadyMentioned) {
+          warnings.push(`⚠️ 모멘텀 경고: ${momentumLine}`);
+        }
+      }
+
+      if (warnings.length > 0) {
+        parsed.impact = warnings.join(' ') + (parsed.impact ? ' ' + parsed.impact : '');
+      }
+
       res.json({ status: 'ok', ...parsed });
     } else {
       res.json({ status: 'ok', summary: raw, sentiment: 'neutral', score: 0, factors: [], impact: '' });
