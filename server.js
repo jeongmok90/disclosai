@@ -733,7 +733,7 @@ async function fetchMacroContext(date) {
     const getLatestBefore = async (seriesId) => {
       const { data } = await axios.get(
         `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${seriesId}`,
-        { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000, responseType: 'text' }
+        { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000, responseType: 'text' }
       );
       const lines = data.trim().split('\n').slice(1); // 헤더 제거
       // date 이하의 가장 가까운 값 찾기
@@ -760,7 +760,7 @@ async function fetchKoreanMacro(date) {
   try {
     const { data } = await axios.get(
       'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXKOUS',
-      { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000, responseType: 'text' }
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000, responseType: 'text' }
     );
     const lines = data.trim().split('\n').slice(1);
     let usdkrw = null;
@@ -1099,7 +1099,7 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
   "impact": "주가 영향 분석. 한국어."
 }`;
 
-    const model  = genAI.getGenerativeModel({ model: 'gemma-3-27b-it' });
+    const model  = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
     const result = await model.generateContent(prompt);
     const raw    = result.response.text();
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
