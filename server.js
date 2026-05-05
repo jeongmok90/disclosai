@@ -472,22 +472,28 @@ function computeNlpSentiment(text) {
   return { negCount, posCount, negRate, posRate, signal };
 }
 
-// 2. 매크로 컨텍스트 (Yahoo Finance VIX + 10년물 금리)
+// 2. 매크로 컨텍스트 (FRED API — VIX + 10년물 금리, 키 불필요)
 async function fetchMacroContext(date) {
   try {
-    const d   = new Date(date + 'T12:00:00Z');
-    const end  = Math.floor(d.getTime() / 1000) + 86400;
-    const start = end - 7 * 86400;
-    const getClose = async (sym) => {
+    const getLatestBefore = async (seriesId) => {
       const { data } = await axios.get(
-        `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}`,
-        { params: { interval: '1d', period1: start, period2: end },
-          headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 6000 }
+        `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${seriesId}`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000, responseType: 'text' }
       );
-      const closes = data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(c => c != null) || [];
-      return closes.length ? parseFloat(closes[closes.length - 1].toFixed(2)) : null;
+      const lines = data.trim().split('\n').slice(1); // 헤더 제거
+      // date 이하의 가장 가까운 값 찾기
+      const target = date.replace(/-/g, '-');
+      let val = null;
+      for (const line of lines) {
+        const [d, v] = line.split(',');
+        if (d <= target && v && v.trim() !== '.') val = parseFloat(v);
+      }
+      return val;
     };
-    const [vix, tnx] = await Promise.all([getClose('^VIX'), getClose('^TNX')]);
+    const [vix, tnx] = await Promise.all([
+      getLatestBefore('VIXCLS'),
+      getLatestBefore('DGS10'),
+    ]);
     const vixSignal = !vix ? 'neutral' : vix > 25 ? 'negative' : vix < 15 ? 'positive' : 'neutral';
     const tnxSignal = !tnx ? 'neutral' : tnx > 4.5 ? 'negative' : tnx < 3.5 ? 'positive' : 'neutral';
     return { vix, tnx, vixSignal, tnxSignal };
