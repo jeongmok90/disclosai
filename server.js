@@ -698,62 +698,68 @@ impact 작성 지침:
   }
 });
 
-// ── 유사 공시 주가 영향 조회 (Yahoo Finance) ──────────────────────────────
+// ── 유사 공시 주가 영향 조회 (Twelve Data) ────────────────────────────────
 app.get('/api/price-impact', async (req, res) => {
   const { ticker, market, date } = req.query;
   if (!ticker || !date) return res.json({ status: 'no_params' });
+  if (!process.env.TWELVEDATA_API_KEY) return res.json({ status: 'no_key' });
 
   const cacheKey = `price-${ticker}-${date}`;
   const cached = getCache(cacheKey);
   if (cached) return res.json(cached);
 
-  const symbol = market === 'KOSPI' ? ticker + '.KS'
-               : market === 'KOSDAQ' ? ticker + '.KQ'
-               : ticker;
-  const indexSymbol = (market === 'KOSPI' || market === 'KOSDAQ') ? '^KS11' : '^GSPC';
-
+  const isKorean = market === 'KOSPI' || market === 'KOSDAQ';
   const base = new Date(date + 'T00:00:00Z');
-  const period1 = Math.floor(base.getTime() / 1000) - 7 * 86400;
-  const period2 = Math.floor(base.getTime() / 1000) + 7 * 86400;
+  const startDate = new Date(base.getTime() - 10 * 86400000).toISOString().slice(0, 10);
+  const endDate   = new Date(base.getTime() +  5 * 86400000).toISOString().slice(0, 10);
 
-  const fetchChart = async (sym) => {
-    const { data } = await axios.get(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}`,
-      {
-        params: { interval: '1d', period1, period2 },
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        timeout: 8000,
-      }
-    );
-    return data.chart?.result?.[0] || null;
+  const fetchSeries = async (symbol, exchange) => {
+    const params = {
+      symbol,
+      interval: '1day',
+      start_date: startDate,
+      end_date: endDate,
+      apikey: process.env.TWELVEDATA_API_KEY,
+      format: 'JSON',
+    };
+    if (exchange) params.exchange = exchange;
+    const { data } = await axios.get('https://api.twelvedata.com/time_series', { params, timeout: 10000 });
+    if (data.status === 'error' || !Array.isArray(data.values)) return null;
+    // Twelve Data returns newest-first — reverse to oldest-first
+    return data.values.reverse();
   };
 
   try {
-    const [stock, index] = await Promise.allSettled([fetchChart(symbol), fetchChart(indexSymbol)]);
-    const stockData = stock.status === 'fulfilled' ? stock.value : null;
-    const indexData = index.status === 'fulfilled' ? index.value : null;
+    const exchange    = isKorean ? 'KRX' : undefined;
+    const indexSymbol = isKorean ? 'KOSPI' : 'SPX';
+    const indexExch   = isKorean ? 'INDX' : 'INDX';
 
-    if (!stockData?.timestamp) return res.json({ status: 'no_data' });
+    const [stockVals, indexVals] = await Promise.all([
+      fetchSeries(ticker, exchange),
+      fetchSeries(indexSymbol, indexExch).catch(() => null),
+    ]);
 
-    const filingUnix = Math.floor(base.getTime() / 1000);
-    const ts = stockData.timestamp;
-    const cl = stockData.indicators.quote[0].close;
+    if (!stockVals || stockVals.length < 2) return res.json({ status: 'no_data' });
 
-    // 공시일 기준 직전/직후 거래일 인덱스
-    let dayIdx = ts.findIndex(t => t >= filingUnix - 43200); // 12시간 여유
-    if (dayIdx < 0) dayIdx = ts.length - 1;
+    // 공시일 기준 직전/직후 거래일 찾기
+    const filingDate = date; // 'YYYY-MM-DD'
+    let dayIdx = stockVals.findIndex(v => v.datetime >= filingDate);
+    if (dayIdx < 0) dayIdx = stockVals.length - 1;
     const beforeIdx = Math.max(0, dayIdx - 1);
-    const afterIdx  = Math.min(ts.length - 1, dayIdx + 1);
+    const afterIdx  = Math.min(stockVals.length - 1, dayIdx + 1);
 
-    const priceChange = (cl[beforeIdx] && cl[afterIdx])
-      ? Math.round((cl[afterIdx] - cl[beforeIdx]) / cl[beforeIdx] * 1000) / 10
+    const cBefore = parseFloat(stockVals[beforeIdx]?.close);
+    const cAfter  = parseFloat(stockVals[afterIdx]?.close);
+    const priceChange = (cBefore && cAfter && beforeIdx !== afterIdx)
+      ? Math.round((cAfter - cBefore) / cBefore * 1000) / 10
       : null;
 
     let marketChange = null;
-    if (indexData?.indicators?.quote?.[0]?.close) {
-      const ic = indexData.indicators.quote[0].close;
-      if (ic[beforeIdx] && ic[afterIdx])
-        marketChange = Math.round((ic[afterIdx] - ic[beforeIdx]) / ic[beforeIdx] * 1000) / 10;
+    if (indexVals && indexVals.length > afterIdx) {
+      const iBefore = parseFloat(indexVals[beforeIdx]?.close);
+      const iAfter  = parseFloat(indexVals[afterIdx]?.close);
+      if (iBefore && iAfter && beforeIdx !== afterIdx)
+        marketChange = Math.round((iAfter - iBefore) / iBefore * 1000) / 10;
     }
 
     const result = {
@@ -766,7 +772,7 @@ app.get('/api/price-impact', async (req, res) => {
     setCache(cacheKey, result);
     res.json(result);
   } catch (err) {
-    console.warn('가격 조회 실패:', err.message.slice(0, 60));
+    console.warn('Twelve Data 조회 실패:', err.message.slice(0, 80));
     res.json({ status: 'error' });
   }
 });
