@@ -287,9 +287,9 @@
     <hr class="sep">
     <div class="sidebar-section">
       <div class="sidebar-title">관심 종목</div>
-      <button class="filter-btn">⭐ 삼성전자</button>
-      <button class="filter-btn">⭐ NVIDIA</button>
-      <button class="filter-btn">⭐ SK하이닉스</button>
+      <button class="filter-btn" onclick="filterCompany('삼성전자',this)">⭐ 삼성전자</button>
+      <button class="filter-btn" onclick="filterCompany('NVIDIA',this)">⭐ NVIDIA</button>
+      <button class="filter-btn" onclick="filterCompany('SK하이닉스',this)">⭐ SK하이닉스</button>
     </div>
   </aside>
 
@@ -512,7 +512,7 @@ const DEMO_FILINGS = [
 
 // ── 상태 ──────────────────────────────────────────────────────────────────
 let allFilings = [...DEMO_FILINGS];
-let activeMarket = 'all', activeSentiment = null, activeType = null, searchQuery = '';
+let activeMarket = 'all', activeSentiment = null, activeType = null, activeCompany = null, searchQuery = '';
 const canvasRegistry = {};
 let isLiveMode = false;
 let isPro = true; // MVP: PRO 기본 활성화
@@ -1045,6 +1045,7 @@ function getFiltered() {
     if (activeMarket !== 'all' && f.market !== activeMarket) return false;
     if (activeSentiment && f.sentiment !== activeSentiment) return false;
     if (activeType && f.type !== activeType) return false;
+    if (activeCompany && f.company !== activeCompany) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       if (!(f.company+f.title+f.ticker).toLowerCase().includes(q)) return false;
@@ -1148,6 +1149,14 @@ function filterType(t, btn) {
     if (/filterType/.test(b.onclick?.toString()||'')) b.classList.remove('active');
   });
   if (activeType) btn.classList.add('active');
+  renderFeed();
+}
+function filterCompany(c, btn) {
+  activeCompany = activeCompany === c ? null : c; currentPage = 1;
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    if (/filterCompany/.test(b.onclick?.toString()||'')) b.classList.remove('active');
+  });
+  if (activeCompany) btn.classList.add('active');
   renderFeed();
 }
 function switchTab(tab, btn) {
