@@ -650,6 +650,12 @@ async function fetchFmpData(ticker, filingDate) {
       }
       if (parts.length) consensusLine = parts.join(' / ');
     }
+    const epsSurprisePct = latest?.epsEstimated
+      ? Math.round((latest.epsActual - latest.epsEstimated) / Math.abs(latest.epsEstimated) * 1000) / 10
+      : null;
+    const revSurprisePct = latest?.revenueEstimated && latest?.revenueActual
+      ? Math.round((latest.revenueActual - latest.revenueEstimated) / latest.revenueEstimated * 1000) / 10
+      : null;
 
     // 2. CAPEX 효율성
     const cashflows = cashflowRes.data || [];
@@ -699,7 +705,7 @@ async function fetchFmpData(ticker, filingDate) {
       }
     }
 
-    const result = { consensusLine, capexLine, ttmEps, growthLine };
+    const result = { consensusLine, capexLine, ttmEps, growthLine, epsSurprisePct, revSurprisePct };
     _fmpCache.set(cacheKey, { data: result, ts: Date.now() });
     return result;
   } catch (e) {
@@ -755,6 +761,75 @@ async function fetchMomentum30(ticker, market, filingDate) {
     console.warn('모멘텀 조회 실패:', e.message.slice(0, 60));
     return null;
   }
+}
+
+// ── 규칙 기반 스코어 계산 ─────────────────────────────────────────────────
+// AI에게 스코어를 맡기면 오판 많음 → 변수별 가중치 고정으로 일관성 확보
+function computeRuleScore({ source, fmp, momentum, valuationLine, growthLine, nlp, dartSpecificLine, dartFinLine, krMacroLine, guidancePct }) {
+  let score = 0;
+
+  if (source === 'edgar') {
+    // ① EPS 서프라이즈 (가장 큰 가중치)
+    const eps = fmp?.epsSurprisePct;
+    if (eps != null) {
+      score += eps > 10 ? 35 : eps > 5 ? 25 : eps > 2 ? 15 : eps > 0 ? 7
+             : eps > -2 ? -7 : eps > -5 ? -18 : -30;
+    }
+    // ② 매출 서프라이즈
+    const rev = fmp?.revSurprisePct;
+    if (rev != null) {
+      score += rev > 5 ? 15 : rev > 2 ? 10 : rev > 0 ? 5 : rev > -2 ? -5 : -12;
+    }
+    // ③ 차기 가이던스 (있으면 강력한 신호)
+    if (guidancePct != null) {
+      score += guidancePct > 5 ? 20 : guidancePct > 2 ? 12 : guidancePct > 0 ? 6
+             : guidancePct > -2 ? -6 : guidancePct > -5 ? -15 : -22;
+    }
+    // ④ 매출 성장 추이
+    if (growthLine?.includes('가속')) score += 8;
+    else if (growthLine?.includes('둔화')) score -= 8;
+  }
+
+  if (source === 'dart') {
+    // ① 수주 규모 (매출 대비 %)
+    if (dartSpecificLine) {
+      const m = dartSpecificLine.match(/매출대비\s*([\d.]+)%/) || dartSpecificLine.match(/([\d.]+)%/);
+      if (m) {
+        const r = parseFloat(m[1]);
+        score += r > 10 ? 30 : r > 5 ? 20 : r > 2 ? 12 : r > 1 ? 6 : 3;
+      }
+    }
+    // ② 실적 YoY
+    if (dartFinLine) {
+      const m = dartFinLine.match(/YoY\s*([+-]?[\d.]+)/);
+      if (m) {
+        const yoy = parseFloat(m[1]);
+        score += yoy > 30 ? 30 : yoy > 15 ? 20 : yoy > 5 ? 12 : yoy > 0 ? 5
+               : yoy > -10 ? -8 : yoy > -20 ? -18 : -28;
+      }
+    }
+    // ③ 환율 영향
+    if (krMacroLine?.includes('⚠️') && krMacroLine.includes('강달러')) score += 5;
+  }
+
+  // ⑤ 공시 전 모멘텀 — 과열이면 차익 실현 압력 (기대치 이미 반영)
+  const ret30 = momentum?.ret30;
+  if (ret30 != null) {
+    score += ret30 >= 25 ? -15 : ret30 >= 15 ? -10 : ret30 >= 8 ? -5
+           : ret30 <= -15 ? 10 : ret30 <= -8 ? 6 : 0;
+  }
+
+  // ⑥ 밸류에이션
+  if (valuationLine?.includes('극단적 고평가')) score -= 8;
+  else if (valuationLine?.includes('주의')) score -= 4;
+
+  // ⑦ NLP 감성
+  if (nlp) {
+    if (nlp.negRate > nlp.posRate * 1.5) score -= 5;
+    else if (nlp.posRate > nlp.negRate * 1.5) score += 5;
+  }
+
+  return Math.max(-100, Math.min(100, Math.round(score)));
 }
 
 function computeNlpSentiment(text) {
@@ -1174,9 +1249,9 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
 {
   "summary": "공시에서 발표한 수치와 사실만 3~5문장. 예측·전망·주가 관련 표현 완전 배제.",
   "sentiment": "positive 또는 negative 또는 neutral",
-  "score": 정수,
   "factors": ["핵심 요인 3개, 수치 포함"],
-  "impact": "주가 영향 분석. 한국어."
+  "impact": "주가 영향 분석. 한국어.",
+  "guidancePct": 원문에서 차기 분기/연간 가이던스가 이전 컨센서스 대비 몇 % 높거나 낮은지 숫자만 (없으면 null)
 }`;
 
     // AI 호출: Gemini
@@ -1197,6 +1272,16 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
 
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
+
+      // ── 규칙 기반 스코어 계산 (AI 스코어 대체) ───────────────────────────
+      const guidancePct = typeof parsed.guidancePct === 'number' ? parsed.guidancePct : null;
+      const ruleScore = computeRuleScore({
+        source, fmp, momentum, valuationLine, growthLine, nlp,
+        dartSpecificLine, dartFinLine, krMacroLine, guidancePct,
+      });
+      parsed.score = ruleScore;
+      parsed.sentiment = ruleScore >= 15 ? 'positive' : ruleScore <= -15 ? 'negative' : 'neutral';
+      console.log(`[Score] ${company} 규칙기반 ${ruleScore} (guidance: ${guidancePct})`);
 
       // ── summary에서 예측·전망 문장 제거 ─────────────────────────────────
       if (parsed.summary) {
