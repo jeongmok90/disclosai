@@ -336,14 +336,26 @@ function parseDartFinancials(text) {
   return parts.length > 0 ? `[실제 데이터] ${parts.join(' / ')}` : null;
 }
 
-async function fetchDartDocText(rcept_no) {
+async function fetchDartDocText(rcept_no, corp_code = null, filing_date = null) {
   try {
     const { data } = await axios.get('https://opendart.fss.or.kr/api/document.xml', {
       params: { crtfc_key: process.env.DART_API_KEY, rcept_no },
       responseType: 'arraybuffer',
       timeout: 15000,
     });
-    const zip = new AdmZip(Buffer.from(data));
+
+    // DART가 ZIP 대신 XML 에러(status 014 등)를 반환하는 경우 처리
+    const raw = Buffer.from(data);
+    if (raw.slice(0, 5).toString().includes('<?xml') || raw.slice(0, 5).toString().includes('<resu')) {
+      const xmlStr = raw.toString('utf8');
+      const statusMatch = xmlStr.match(/<status>(\d+)<\/status>/);
+      if (statusMatch && statusMatch[1] !== '000') {
+        console.warn(`DART document.xml status ${statusMatch[1]} — structured API fallback 시도`);
+        return corp_code ? await fetchDartStructuredFallback(corp_code, rcept_no, filing_date) : null;
+      }
+    }
+
+    const zip = new AdmZip(raw);
     const entries = zip.getEntries().sort((a, b) => b.header.size - a.header.size);
     const entry = entries.find(e => /\.(html?|xml)$/i.test(e.entryName));
     if (!entry) return null;
@@ -364,8 +376,42 @@ async function fetchDartDocText(rcept_no) {
     return text.slice(0, 8000);
   } catch (e) {
     console.warn('DART 원문 조회 실패:', e.message.slice(0, 60));
+    if (corp_code) return fetchDartStructuredFallback(corp_code, rcept_no, filing_date);
     return null;
   }
+}
+
+// DART document.xml이 파일 없음(014)을 반환할 때 구조화 API로 대체 텍스트 생성
+async function fetchDartStructuredFallback(corp_code, rcept_no, filing_date) {
+  try {
+    const year = (filing_date || '').slice(0, 4) || String(new Date().getFullYear());
+
+    // 최대주주·주요주주 변동 데이터
+    const { data: ms } = await axios.get('https://opendart.fss.or.kr/api/majorstock.json', {
+      params: { crtfc_key: process.env.DART_API_KEY, corp_code, bsns_year: year, reprt_code: '11011' },
+      timeout: 10000,
+    });
+    if (ms.status === '000' && ms.list?.length) {
+      // 해당 rcept_no와 날짜 근처의 항목 우선, 없으면 전체 최근 5건
+      const items = ms.list
+        .filter(i => i.rcept_no <= rcept_no)
+        .sort((a, b) => b.rcept_no.localeCompare(a.rcept_no))
+        .slice(0, 5);
+
+      if (items.length) {
+        const lines = items.map(i => {
+          const changed = i.stkqy_irds && i.stkqy_irds !== '-'
+            ? ` (변동 ${i.stkqy_irds}주, ${i.stkrt_irds}%p)`
+            : '';
+          return `${i.repror}: 보유 ${i.stkqy}주 (${i.stkrt}%)${changed} — ${i.report_resn}`;
+        });
+        return `[주요주주 보유현황 — OpenDART 구조화 데이터]\n${lines.join('\n')}`;
+      }
+    }
+  } catch (e) {
+    console.warn('DART structured fallback 실패:', e.message.slice(0, 60));
+  }
+  return null;
 }
 
 const EDGAR_HEADERS = { 'User-Agent': 'Context.ai info@disclosai.kr' };
@@ -972,9 +1018,15 @@ app.post('/api/analyze/summary', async (req, res) => {
     const ticker = req.body.ticker || null;
     const market = req.body.market || '';
 
+    // DART corp_code — company 이름으로 lookup (structured fallback에 필요)
+    const dartTarget = source === 'dart'
+      ? DART_TARGETS.find(t => t.name === company)
+      : null;
+    const dartCorpCode = dartTarget?.corp_code || null;
+
     const [docText, macro, krMacro, insider, fmp, momentum] = await Promise.all([
       source === 'dart' && id
-        ? fetchDartDocText(id)
+        ? fetchDartDocText(id, dartCorpCode, date)
         : source === 'edgar' && url
           ? fetchEdgarDocText(url, formType)
           : Promise.resolve(null),
