@@ -1046,9 +1046,7 @@ app.post('/api/analyze/summary', async (req, res) => {
     }
 
     const hasDoc = !!textForPrompt;
-    const prompt = `당신은 주식 공시 분석 전문가입니다.
-
-기업명: ${company}
+    const prompt = `기업명: ${company}
 공시 일자: ${date}
 공시 유형: ${filingType}
 공시 제목: ${title}
@@ -1121,9 +1119,15 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
             'https://api.groq.com/openai/v1/chat/completions',
             {
               model: groqModel,
-              messages: [{ role: 'user', content: prompt }],
-              temperature: 0.3,
-              max_tokens: 1024,
+              messages: [
+                {
+                  role: 'system',
+                  content: '당신은 한국 주식 공시 분석 전문가입니다. 사용자의 지시를 정확히 따르고, 요청된 JSON 형식만 출력하세요. 코드블록(```), 설명, 추가 텍스트는 절대 포함하지 마세요.',
+                },
+                { role: 'user', content: prompt },
+              ],
+              temperature: 0.1,
+              max_tokens: 1200,
             },
             {
               headers: {
