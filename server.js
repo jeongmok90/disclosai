@@ -1317,6 +1317,14 @@ app.get('/api/price-impact', async (req, res) => {
   }
 });
 
+// ── 분석 캐시 초기화 ─────────────────────────────────────────────────────
+app.post('/api/cache/clear', (_, res) => {
+  const count = _analysisCache.size;
+  _analysisCache.clear();
+  console.log(`[Cache] 분석 캐시 초기화: ${count}건 삭제`);
+  res.json({ status: 'ok', cleared: count });
+});
+
 // ── 서버 상태 확인 ────────────────────────────────────────────────────────
 app.get('/api/status', (_, res) => res.json({
   dart:   !!process.env.DART_API_KEY,
