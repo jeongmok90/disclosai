@@ -670,6 +670,9 @@ async function generateSummary(filing) {
       allFilings[idx].summary = data.summary;
       allFilings[idx].sentiment = data.sentiment || 'neutral';
       allFilings[idx].score = data.score ?? 0;
+      allFilings[idx].confidence = data.confidence ?? null;
+      allFilings[idx].usedVars = data.usedVars ?? null;
+      allFilings[idx].totalVars = data.totalVars ?? null;
       allFilings[idx].factors = data.factors || [];
       if (data.impact) allFilings[idx].impact = data.impact;
       refreshCard(filing.id);
@@ -806,9 +809,10 @@ function renderCard(f) {
         </div>
         <div class="card-title">${f.title}</div>
       </div>
-      <div class="sentiment-pill ${sent}">
+      <div class="sentiment-pill ${sent}" title="${f.usedVars != null ? `${f.usedVars}/${f.totalVars}개 지표 반영` : ''}">
         <span class="score">${sent==='positive'?'↑':sent==='negative'?'↓':sent==='neutral'?'→':'—'}</span>
         <span>${scoreAbs}</span>
+        ${f.confidence != null ? `<span style="font-size:10px;opacity:0.7;font-weight:500">${f.usedVars}/${f.totalVars}</span>` : ''}
       </div>
     </div>
     <button class="expand-hint" onclick="toggleCard('${f.id}')">

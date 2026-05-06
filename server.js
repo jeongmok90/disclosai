@@ -767,69 +767,93 @@ async function fetchMomentum30(ticker, market, filingDate) {
 // AI에게 스코어를 맡기면 오판 많음 → 변수별 가중치 고정으로 일관성 확보
 function computeRuleScore({ source, fmp, momentum, valuationLine, growthLine, nlp, dartSpecificLine, dartFinLine, krMacroLine, guidancePct }) {
   let score = 0;
+  const used = [];   // 실제 데이터가 있어서 반영된 변수
+  const total = [];  // 이 source에서 원래 가능한 변수 목록
 
   if (source === 'edgar') {
-    // ① EPS 서프라이즈 (가장 큰 가중치)
+    total.push('EPS', '매출', '가이던스', '성장추이', '모멘텀', '밸류에이션', 'NLP');
+
     const eps = fmp?.epsSurprisePct;
     if (eps != null) {
+      used.push('EPS');
       score += eps > 10 ? 35 : eps > 5 ? 25 : eps > 2 ? 15 : eps > 0 ? 7
              : eps > -2 ? -7 : eps > -5 ? -18 : -30;
     }
-    // ② 매출 서프라이즈
     const rev = fmp?.revSurprisePct;
     if (rev != null) {
+      used.push('매출');
       score += rev > 5 ? 15 : rev > 2 ? 10 : rev > 0 ? 5 : rev > -2 ? -5 : -12;
     }
-    // ③ 차기 가이던스 (있으면 강력한 신호)
     if (guidancePct != null) {
+      used.push('가이던스');
       score += guidancePct > 5 ? 20 : guidancePct > 2 ? 12 : guidancePct > 0 ? 6
              : guidancePct > -2 ? -6 : guidancePct > -5 ? -15 : -22;
     }
-    // ④ 매출 성장 추이
-    if (growthLine?.includes('가속')) score += 8;
-    else if (growthLine?.includes('둔화')) score -= 8;
+    if (growthLine) {
+      used.push('성장추이');
+      if (growthLine.includes('가속')) score += 8;
+      else if (growthLine.includes('둔화')) score -= 8;
+    }
   }
 
   if (source === 'dart') {
-    // ① 수주 규모 (매출 대비 %)
+    total.push('수주/실적', '환율', '모멘텀', '밸류에이션', 'NLP');
+
+    let dartHit = false;
     if (dartSpecificLine) {
       const m = dartSpecificLine.match(/매출대비\s*([\d.]+)%/) || dartSpecificLine.match(/([\d.]+)%/);
       if (m) {
+        dartHit = true;
         const r = parseFloat(m[1]);
         score += r > 10 ? 30 : r > 5 ? 20 : r > 2 ? 12 : r > 1 ? 6 : 3;
       }
     }
-    // ② 실적 YoY
-    if (dartFinLine) {
+    if (!dartHit && dartFinLine) {
       const m = dartFinLine.match(/YoY\s*([+-]?[\d.]+)/);
       if (m) {
+        dartHit = true;
         const yoy = parseFloat(m[1]);
         score += yoy > 30 ? 30 : yoy > 15 ? 20 : yoy > 5 ? 12 : yoy > 0 ? 5
                : yoy > -10 ? -8 : yoy > -20 ? -18 : -28;
       }
     }
-    // ③ 환율 영향
-    if (krMacroLine?.includes('⚠️') && krMacroLine.includes('강달러')) score += 5;
+    if (dartHit) used.push('수주/실적');
+
+    if (krMacroLine) {
+      used.push('환율');
+      if (krMacroLine.includes('⚠️') && krMacroLine.includes('강달러')) score += 5;
+    }
   }
 
-  // ⑤ 공시 전 모멘텀 — 과열이면 차익 실현 압력 (기대치 이미 반영)
+  // 공통 변수
   const ret30 = momentum?.ret30;
   if (ret30 != null) {
+    used.push('모멘텀');
     score += ret30 >= 25 ? -15 : ret30 >= 15 ? -10 : ret30 >= 8 ? -5
            : ret30 <= -15 ? 10 : ret30 <= -8 ? 6 : 0;
   }
 
-  // ⑥ 밸류에이션
-  if (valuationLine?.includes('극단적 고평가')) score -= 8;
-  else if (valuationLine?.includes('주의')) score -= 4;
+  if (valuationLine) {
+    used.push('밸류에이션');
+    if (valuationLine.includes('극단적 고평가')) score -= 8;
+    else if (valuationLine.includes('주의')) score -= 4;
+  }
 
-  // ⑦ NLP 감성
   if (nlp) {
+    used.push('NLP');
     if (nlp.negRate > nlp.posRate * 1.5) score -= 5;
     else if (nlp.posRate > nlp.negRate * 1.5) score += 5;
   }
 
-  return Math.max(-100, Math.min(100, Math.round(score)));
+  const confidence = total.length > 0 ? Math.round(used.length / total.length * 100) : 0;
+
+  return {
+    score: Math.max(-100, Math.min(100, Math.round(score))),
+    confidence,               // 0~100%
+    usedVars: used.length,    // 반영된 변수 수
+    totalVars: total.length,  // 가능한 변수 수
+    usedList: used,           // 반영된 변수 이름
+  };
 }
 
 function computeNlpSentiment(text) {
@@ -1275,13 +1299,17 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
 
       // ── 규칙 기반 스코어 계산 (AI 스코어 대체) ───────────────────────────
       const guidancePct = typeof parsed.guidancePct === 'number' ? parsed.guidancePct : null;
-      const ruleScore = computeRuleScore({
+      const ruleResult = computeRuleScore({
         source, fmp, momentum, valuationLine, growthLine, nlp,
         dartSpecificLine, dartFinLine, krMacroLine, guidancePct,
       });
-      parsed.score = ruleScore;
-      parsed.sentiment = ruleScore >= 15 ? 'positive' : ruleScore <= -15 ? 'negative' : 'neutral';
-      console.log(`[Score] ${company} 규칙기반 ${ruleScore} (guidance: ${guidancePct})`);
+      parsed.score      = ruleResult.score;
+      parsed.confidence = ruleResult.confidence;
+      parsed.usedVars   = ruleResult.usedVars;
+      parsed.totalVars  = ruleResult.totalVars;
+      parsed.usedList   = ruleResult.usedList;
+      parsed.sentiment  = ruleResult.score >= 15 ? 'positive' : ruleResult.score <= -15 ? 'negative' : 'neutral';
+      console.log(`[Score] ${company} ${ruleResult.score}점 (신뢰도 ${ruleResult.confidence}% — ${ruleResult.usedVars}/${ruleResult.totalVars}개 변수)`);
 
       // ── summary에서 예측·전망 문장 제거 ─────────────────────────────────
       if (parsed.summary) {
