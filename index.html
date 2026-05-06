@@ -914,7 +914,7 @@ function toggleCard(id, forceOpen=false) {
     if (f?.spark?.length) setTimeout(() => drawSparkline(`spark-${id}`, f), 60);
     // 요약이 없으면 카드 열 때 즉시 AI 분석 시작
     if (f && f.summary === null && isLiveMode) generateSummary(f);
-    if (f && f.historical === undefined && isLiveMode) loadSimilarFilings(f);
+    if (f && !f._macroFiltered && isLiveMode) loadSimilarFilings(f);
   } else {
     body.classList.remove('open');
     chev?.classList.remove('open');
@@ -928,18 +928,79 @@ async function loadSimilarFilings(filing) {
     ? (window._allDart?.length ? window._allDart : fallback)
     : (window._allEdgar?.length ? window._allEdgar : fallback);
 
-  const similar = pool
+  const isKorean = filing.market === 'kr';
+
+  // 같은 회사 + 같은 공시 유형 후보 (최대 20개)
+  const candidates = pool
     .filter(f => f.company === filing.company && f.type === filing.type && f.id !== filing.id)
     .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, 4);
+    .slice(0, 20);
 
   const idx = allFilings.findIndex(f => f.id === filing.id);
 
-  if (similar.length === 0) {
+  if (candidates.length === 0) {
     if (idx !== -1) allFilings[idx].historical = null;
     updateHistSection(filing.id, null);
     return;
   }
+
+  // ── 매크로 버킷 조회 ──
+  // DART 날짜는 "20260506" 형식 → FRED 비교용 "2026-05-06" 형식으로 변환
+  const toIso = d => d && d.length === 8 ? `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}` : d;
+
+  let macroMatched = candidates; // 기본값: 매크로 무시하고 전체
+  try {
+    const rawDates = [...new Set([filing.date, ...candidates.map(f => f.date)])];
+    const isoDates = rawDates.map(toIso);
+    const bucketsResp = await fetch('/api/macro-buckets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dates: isoDates }),
+    });
+    const buckets = await bucketsResp.json();
+    const cur = buckets[toIso(filing.date)];
+
+    if (cur) {
+      // VIX + 금리 버킷 일치 필수 / 한국 주식은 환율 버킷도 추가 매칭
+      const matched = candidates.filter(f => {
+        const b = buckets[toIso(f.date)];
+        if (!b) return false;
+        const vixOk  = b.vixBucket  === cur.vixBucket;
+        const rateOk = b.rateBucket === cur.rateBucket;
+        const fxOk   = !isKorean || b.fxBucket === cur.fxBucket;
+        return vixOk && rateOk && fxOk;
+      });
+
+      // 매크로 매칭 결과가 2개 이상이면 사용, 미달이면 VIX+금리만으로 재시도
+      if (matched.length >= 2) {
+        macroMatched = matched;
+        console.log(`[유사공시] 매크로 3종 매칭: ${matched.length}개`);
+      } else {
+        const relaxed = candidates.filter(f => {
+          const b = buckets[toIso(f.date)];
+          return b && b.vixBucket === cur.vixBucket && b.rateBucket === cur.rateBucket;
+        });
+        if (relaxed.length >= 2) {
+          macroMatched = relaxed;
+          console.log(`[유사공시] 매크로 2종 매칭(환율 제외): ${relaxed.length}개`);
+        } else {
+          macroMatched = candidates; // 폴백
+          console.log(`[유사공시] 매크로 매칭 미달 → 전체 ${candidates.length}개 사용`);
+        }
+      }
+
+      // 매칭된 항목에 매크로 라벨 태깅
+      macroMatched = macroMatched.map(f => ({
+        ...f,
+        _macroBucket: buckets[toIso(f.date)],
+        _macroMatched: !!(buckets[toIso(f.date)]?.vixBucket === cur.vixBucket && buckets[toIso(f.date)]?.rateBucket === cur.rateBucket),
+      }));
+    }
+  } catch (e) {
+    console.warn('[유사공시] 매크로 버킷 조회 실패:', e.message);
+  }
+
+  const similar = macroMatched.slice(0, 4);
 
   const results = await Promise.allSettled(similar.map(f => {
     const params = new URLSearchParams({ ticker: f.ticker, date: f.date });
@@ -951,11 +1012,15 @@ async function loadSimilarFilings(filing) {
         priceChange: impact.status === 'ok' ? impact.priceChange : null,
         marketChange: impact.status === 'ok' ? impact.marketChange : null,
         relativeChange: impact.status === 'ok' ? impact.relativeChange : null,
+        macroBucket: f._macroBucket || null,
+        macroMatched: f._macroMatched ?? true,
         status: impact.status,
       }))
       .catch(() => ({
         id: f.id, company: f.company, date: f.date, title: f.title,
-        priceChange: null, marketChange: null, relativeChange: null, status: 'error',
+        priceChange: null, marketChange: null, relativeChange: null,
+        macroBucket: f._macroBucket || null, macroMatched: f._macroMatched ?? true,
+        status: 'error',
       }));
   }));
 
@@ -964,7 +1029,10 @@ async function loadSimilarFilings(filing) {
     .map(r => r.value);
 
   const historical = data.length > 0 ? data : null;
-  if (idx !== -1) allFilings[idx].historical = historical;
+  if (idx !== -1) {
+    allFilings[idx].historical = historical;
+    allFilings[idx]._macroFiltered = true;  // 매크로 필터링 완료 표시
+  }
   updateHistSection(filing.id, historical);
 }
 

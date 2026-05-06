@@ -609,6 +609,44 @@ function extractFinancialSection(text, maxLen = 5000) {
 const _fmpCache = new Map();
 const FMP_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7일 (분기 실적 발표 주기보다 짧음)
 
+// ── FRED 시계열 캐시 (VIX·금리·환율 전체 시리즈, 24시간) ────────────────────
+const _fredSeriesCache = new Map();
+const FRED_SERIES_TTL = 24 * 60 * 60 * 1000;
+
+async function fetchFredSeries(seriesId) {
+  const cached = _fredSeriesCache.get(seriesId);
+  if (cached && Date.now() - cached.ts < FRED_SERIES_TTL) return cached.data;
+  const { data } = await axios.get(
+    `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${seriesId}`,
+    { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000, responseType: 'text' }
+  );
+  const series = [];
+  for (const line of data.trim().split('\n').slice(1)) {
+    const [d, v] = line.split(',');
+    if (d && v && v.trim() !== '.') series.push([d, parseFloat(v)]);
+  }
+  _fredSeriesCache.set(seriesId, { data: series, ts: Date.now() });
+  console.log(`[FRED] ${seriesId} 시리즈 캐시 완료 (${series.length}개)`);
+  return series;
+}
+
+function lookupSeriesAt(series, date) {
+  let val = null;
+  for (const [d, v] of series) {
+    if (d <= date) val = v;
+    else break;
+  }
+  return val;
+}
+
+// 매크로 환경 버킷 분류 (VIX / 금리 / 환율)
+function getMacroBucket(vix, tnx, usdkrw) {
+  const vixBucket  = !vix    ? 'mid'    : vix > 25   ? 'high'   : vix < 15   ? 'low'    : 'mid';
+  const rateBucket = !tnx    ? 'mid'    : tnx > 4.5  ? 'high'   : tnx < 3.5  ? 'low'    : 'mid';
+  const fxBucket   = !usdkrw ? 'mid'    : usdkrw >= 1350 ? 'strong' : usdkrw <= 1150 ? 'weak' : 'mid';
+  return { vixBucket, rateBucket, fxBucket, vix, tnx, usdkrw };
+}
+
 // 1. NLP 감성 점수 (로컬 계산)
 // 0. FMP 컨센서스 + CAPEX + 밸류에이션 + 성장 둔화 (미국 주식 전용)
 async function fetchFmpData(ticker, filingDate) {
@@ -855,15 +893,15 @@ function computeRuleScore({ source, fmp, momentum, valuationLine, growthLine, nl
     // P/E 실제 수치 기반 차등 패널티
     const peM = valuationLine.match(/P\/E\s*([\d]+)x/);
     const pe  = peM ? parseInt(peM[1]) : null;
+    // 성장 가속 중이면 P/E 패널티 50% 감면 (고성장 기업의 높은 P/E는 자연스러움)
+    const growthAccel = growthLine?.includes('가속');
+    const peMult = growthAccel ? 0.5 : 1.0;
     if (pe != null) {
-      score += pe > 200 ? -25 : pe > 150 ? -20 : pe > 100 ? -14 : pe > 50 ? -6 : 0;
-    } else if (valuationLine.includes('극단적 고평가')) score -= 14;
-    else if (valuationLine.includes('주의')) score -= 6;
-
-    // 극단적 과열 + 극단적 고평가 동시 → 추가 패널티 (복합 리스크)
-    if (ret30val != null && ret30val >= 25 && pe != null && pe > 100) {
-      score -= 10;
-    }
+      const rawPePenalty = pe > 200 ? -25 : pe > 150 ? -20 : pe > 100 ? -14 : pe > 50 ? -6 : 0;
+      score += Math.round(rawPePenalty * peMult);
+    } else if (valuationLine.includes('극단적 고평가')) score += Math.round(-14 * peMult);
+    else if (valuationLine.includes('주의')) score += Math.round(-6 * peMult);
+    // 복합 리스크 패널티 제거 (모멘텀·밸류에이션 각각 이미 반영됨)
   }
 
   if (nlp) {
@@ -907,25 +945,12 @@ function computeNlpSentiment(text) {
 // 2. 매크로 컨텍스트 (FRED API — VIX + 10년물 금리, 키 불필요)
 async function fetchMacroContext(date) {
   try {
-    const getLatestBefore = async (seriesId) => {
-      const { data } = await axios.get(
-        `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${seriesId}`,
-        { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000, responseType: 'text' }
-      );
-      const lines = data.trim().split('\n').slice(1); // 헤더 제거
-      // date 이하의 가장 가까운 값 찾기
-      const target = date.replace(/-/g, '-');
-      let val = null;
-      for (const line of lines) {
-        const [d, v] = line.split(',');
-        if (d <= target && v && v.trim() !== '.') val = parseFloat(v);
-      }
-      return val;
-    };
-    const [vix, tnx] = await Promise.all([
-      getLatestBefore('VIXCLS'),
-      getLatestBefore('DGS10'),
+    const [vixSeries, tnxSeries] = await Promise.all([
+      fetchFredSeries('VIXCLS'),
+      fetchFredSeries('DGS10'),
     ]);
+    const vix = lookupSeriesAt(vixSeries, date);
+    const tnx = lookupSeriesAt(tnxSeries, date);
     const vixSignal = !vix ? 'neutral' : vix > 25 ? 'negative' : vix < 15 ? 'positive' : 'neutral';
     const tnxSignal = !tnx ? 'neutral' : tnx > 4.5 ? 'negative' : tnx < 3.5 ? 'positive' : 'neutral';
     return { vix, tnx, vixSignal, tnxSignal };
@@ -935,16 +960,8 @@ async function fetchMacroContext(date) {
 // 2-b. 한국 매크로 (원/달러 환율 — FRED DEXKOUS, 키 불필요)
 async function fetchKoreanMacro(date) {
   try {
-    const { data } = await axios.get(
-      'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXKOUS',
-      { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000, responseType: 'text' }
-    );
-    const lines = data.trim().split('\n').slice(1);
-    let usdkrw = null;
-    for (const line of lines) {
-      const [d, v] = line.split(',');
-      if (d <= date && v && v.trim() !== '.') usdkrw = parseFloat(v);
-    }
+    const fxSeries = await fetchFredSeries('DEXKOUS');
+    const usdkrw = lookupSeriesAt(fxSeries, date);
     if (!usdkrw) return null;
 
     let comment;
@@ -1296,12 +1313,16 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
 - "~할 것으로", "~가능성", "~우려", "~기대"
 이러한 표현은 오직 impact 필드에만 사용하세요.
 
+⚠️ 작성 순서 규칙:
+반드시 impact 분석을 먼저 수행하세요. impact에서 내린 결론(주가 상승/하락/중립 예상)을 sentiment에 그대로 반영하세요.
+sentiment는 impact 분석의 요약 결론입니다 — impact가 "주가 상승 기대"면 sentiment는 반드시 "positive", "하락 우려"면 "negative", 영향 미미하면 "neutral".
+
 코드블록 없이 순수 JSON만 출력하세요:
 {
   "summary": "공시에서 발표한 수치와 사실만 3~5문장. 예측·전망·주가 관련 표현 완전 배제.",
-  "sentiment": "positive 또는 negative 또는 neutral",
   "factors": ["핵심 요인 3개, 수치 포함"],
-  "impact": "주가 영향 분석. 한국어.",
+  "impact": "주가 영향 분석을 먼저 작성. 상승/하락/중립 결론을 명확히 포함. 한국어.",
+  "sentiment": "impact 결론 기반 — positive(상승 기대) / negative(하락 우려) / neutral(영향 미미)",
   "guidancePct": 원문에서 차기 분기/연간 가이던스가 이전 컨센서스 대비 몇 % 높거나 낮은지 숫자만 (없으면 null)
 }`;
 
@@ -1324,19 +1345,32 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
 
-      // ── 규칙 기반 스코어 계산 (AI 스코어 대체) ───────────────────────────
+      // ── 하이브리드 스코어: impact 텍스트 방향 분석(기반 ±25) + 규칙 조정값 ──
+      // AI의 sentiment 자체 판단 대신, impact 텍스트를 직접 분석해 방향 결정
+      const impactText = parsed.impact || '';
+      const POS_KR = ['긍정적', '상승', '호재', '매수', '개선', '성장', '기대', '상회', '서프라이즈', '강세', '확대', '호조', '수혜', '상향'];
+      const NEG_KR = ['부정적', '하락', '악재', '매도', '우려', '하회', '실망', '약세', '축소', '리스크', '손실', '부담', '하향', '감소'];
+      const posHits = POS_KR.filter(w => impactText.includes(w)).length;
+      const negHits = NEG_KR.filter(w => impactText.includes(w)).length;
+      const impactDirection = posHits > negHits ? 'positive' : negHits > posHits ? 'negative' : (parsed.sentiment || 'neutral');
+      const aiBase = impactDirection === 'positive' ? 35 : impactDirection === 'negative' ? -35 : 0;
+      console.log(`[Impact NLP] ${company} pos=${posHits} neg=${negHits} → ${impactDirection}(${aiBase >= 0 ? '+' : ''}${aiBase})`);
+
       const guidancePct = typeof parsed.guidancePct === 'number' ? parsed.guidancePct : null;
       const ruleResult = computeRuleScore({
         source, fmp, momentum, valuationLine, growthLine, nlp,
         dartSpecificLine, dartFinLine, krMacroLine, guidancePct,
       });
-      parsed.score      = ruleResult.score;
+
+      // 합산: AI 기반값 + 규칙 조정값 (각각 독립적으로 기여)
+      const hybridScore = Math.max(-100, Math.min(100, aiBase + ruleResult.score));
+      parsed.score      = hybridScore;
       parsed.confidence = ruleResult.confidence;
       parsed.usedVars   = ruleResult.usedVars;
       parsed.totalVars  = ruleResult.totalVars;
       parsed.usedList   = ruleResult.usedList;
-      parsed.sentiment  = ruleResult.score >= 15 ? 'positive' : ruleResult.score <= -15 ? 'negative' : 'neutral';
-      console.log(`[Score] ${company} ${ruleResult.score}점 (신뢰도 ${ruleResult.confidence}% — ${ruleResult.usedVars}/${ruleResult.totalVars}개 변수)`);
+      parsed.sentiment  = hybridScore >= 15 ? 'positive' : hybridScore <= -15 ? 'negative' : 'neutral';
+      console.log(`[Score] ${company} AI=${aiSentiment}(${aiBase >= 0 ? '+' : ''}${aiBase}) 규칙=${ruleResult.score >= 0 ? '+' : ''}${ruleResult.score} → 합계 ${hybridScore}점`);
 
       // ── summary에서 예측·전망 문장 제거 ─────────────────────────────────
       if (parsed.summary) {
@@ -1486,6 +1520,30 @@ app.post('/api/cache/clear', (_, res) => {
   _analysisCache.clear();
   console.log(`[Cache] 분석 캐시 초기화: ${count}건 삭제`);
   res.json({ status: 'ok', cleared: count });
+});
+
+// ── 매크로 버킷 조회 (유사 공시 매크로 환경 매칭용) ─────────────────────────
+app.post('/api/macro-buckets', async (req, res) => {
+  const { dates } = req.body;
+  if (!Array.isArray(dates) || dates.length === 0) return res.json({});
+  try {
+    const [vixSeries, tnxSeries, fxSeries] = await Promise.all([
+      fetchFredSeries('VIXCLS'),
+      fetchFredSeries('DGS10'),
+      fetchFredSeries('DEXKOUS'),
+    ]);
+    const result = {};
+    for (const date of dates) {
+      const vix    = lookupSeriesAt(vixSeries, date);
+      const tnx    = lookupSeriesAt(tnxSeries, date);
+      const usdkrw = lookupSeriesAt(fxSeries,  date);
+      result[date] = getMacroBucket(vix, tnx, usdkrw);
+    }
+    res.json(result);
+  } catch (e) {
+    console.warn('[macro-buckets] 오류:', e.message.slice(0, 60));
+    res.json({});
+  }
 });
 
 // ── 서버 상태 확인 ────────────────────────────────────────────────────────
