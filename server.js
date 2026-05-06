@@ -803,7 +803,17 @@ async function fetchMomentum30(ticker, market, filingDate) {
 
 // ── 규칙 기반 스코어 계산 ─────────────────────────────────────────────────
 // AI에게 스코어를 맡기면 오판 많음 → 변수별 가중치 고정으로 일관성 확보
-function computeRuleScore({ source, fmp, momentum, valuationLine, growthLine, nlp, dartSpecificLine, dartFinLine, krMacroLine, guidancePct }) {
+// 공시 유형별 모멘텀 패널티 강도 (규정 의무 공시는 주가 직접 영향 낮음)
+function getMomentumFactor(title = '') {
+  // 규정상 의무 신고 → 모멘텀과 무관, 패널티 80% 감면
+  if (/소유주식변동|소유상황보고|자기주식취득결과|자기주식처분결과|주식등의대량보유|증권신고|사업보고|반기보고|분기보고/.test(title)) return 0.2;
+  // 수주·계약 공시 → 중간 감면 30%
+  if (/단일판매|공급계약|수주|계약체결/.test(title)) return 0.7;
+  // 실적·투자·합병 공시 → 패널티 전액 적용
+  return 1.0;
+}
+
+function computeRuleScore({ source, fmp, momentum, valuationLine, growthLine, nlp, dartSpecificLine, dartFinLine, krMacroLine, guidancePct, title }) {
   let score = 0;
   const used = [];   // 실제 데이터가 있어서 반영된 변수
   const total = [];  // 이 source에서 원래 가능한 변수 목록
@@ -880,12 +890,13 @@ function computeRuleScore({ source, fmp, momentum, valuationLine, growthLine, nl
   }
 
   // 공통 변수
+  const momentumFactor = getMomentumFactor(title);
   const ret30val = momentum?.ret30;
   if (ret30val != null) {
     used.push('모멘텀');
-    // 강화: 선반영 과열은 더 강한 패널티
-    score += ret30val >= 40 ? -25 : ret30val >= 30 ? -20 : ret30val >= 20 ? -14
-           : ret30val >= 10 ? -7  : ret30val <= -20 ? 12  : ret30val <= -10 ? 7 : 0;
+    const rawMomentum = ret30val >= 40 ? -25 : ret30val >= 30 ? -20 : ret30val >= 20 ? -14
+                      : ret30val >= 10 ? -7  : ret30val <= -20 ? 12  : ret30val <= -10 ? 7 : 0;
+    score += Math.round(rawMomentum * momentumFactor);
   }
 
   if (valuationLine) {
@@ -1354,7 +1365,7 @@ sentiment는 impact 분석의 요약 결론입니다 — impact가 "주가 상�
       const guidancePct = typeof parsed.guidancePct === 'number' ? parsed.guidancePct : null;
       const ruleResult = computeRuleScore({
         source, fmp, momentum, valuationLine, growthLine, nlp,
-        dartSpecificLine, dartFinLine, krMacroLine, guidancePct,
+        dartSpecificLine, dartFinLine, krMacroLine, guidancePct, title,
       });
 
       // 합산: AI 기반값 + 규칙 조정값 (각각 독립적으로 기여)
