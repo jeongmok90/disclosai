@@ -1119,7 +1119,7 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
 
     // 1순위: Gemini (2.0-flash → 1.5-flash)
     if (!raw && genAI) {
-      for (const modelName of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
+      for (const modelName of ['gemini-2.5-flash', 'gemini-2.5-flash-lite']) {
         try {
           const model = genAI.getGenerativeModel({ model: modelName });
           const result = await model.generateContent(prompt);
