@@ -1370,7 +1370,7 @@ sentiment는 impact 분석의 요약 결론입니다 — impact가 "주가 상�
       parsed.totalVars  = ruleResult.totalVars;
       parsed.usedList   = ruleResult.usedList;
       parsed.sentiment  = hybridScore >= 15 ? 'positive' : hybridScore <= -15 ? 'negative' : 'neutral';
-      console.log(`[Score] ${company} AI=${aiSentiment}(${aiBase >= 0 ? '+' : ''}${aiBase}) 규칙=${ruleResult.score >= 0 ? '+' : ''}${ruleResult.score} → 합계 ${hybridScore}점`);
+      console.log(`[Score] ${company} AI=${impactDirection}(${aiBase >= 0 ? '+' : ''}${aiBase}) 규칙=${ruleResult.score >= 0 ? '+' : ''}${ruleResult.score} → 합계 ${hybridScore}점`);
 
       // ── summary에서 예측·전망 문장 제거 ─────────────────────────────────
       if (parsed.summary) {
