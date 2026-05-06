@@ -773,21 +773,37 @@ function computeRuleScore({ source, fmp, momentum, valuationLine, growthLine, nl
   if (source === 'edgar') {
     total.push('EPS', '매출', '가이던스', '성장추이', '모멘텀', '밸류에이션', 'NLP');
 
+    // P/E 추출 (밸류에이션 패널티 강도 결정용)
+    const peMatch = valuationLine?.match(/P\/E\s*([\d]+)x/);
+    const peRatio = peMatch ? parseInt(peMatch[1]) : null;
+
+    // 모멘텀 선반영 할인율 — 주가가 이미 올라있을수록 어닝 비트 효과 감소
+    // ret30 10% 미만: 할인 없음 / 30%: 50% 할인 / 50%+: 80% 할인
+    const ret30 = momentum?.ret30 ?? 0;
+    const earningsDiscount = ret30 <= 10 ? 1.0
+      : ret30 <= 20 ? 1.0 - (ret30 - 10) / 40       // 10~20%: 0~25% 할인
+      : ret30 <= 40 ? 0.75 - (ret30 - 20) / 80       // 20~40%: 25~50% 할인
+      : 0.5;                                           // 40%+: 50% 할인
+
     const eps = fmp?.epsSurprisePct;
     if (eps != null) {
       used.push('EPS');
-      score += eps > 10 ? 35 : eps > 5 ? 25 : eps > 2 ? 15 : eps > 0 ? 7
-             : eps > -2 ? -7 : eps > -5 ? -18 : -30;
+      const raw = eps > 10 ? 35 : eps > 5 ? 25 : eps > 2 ? 15 : eps > 0 ? 7
+                : eps > -2 ? -7 : eps > -5 ? -18 : -30;
+      // 양수(비트)일 때만 할인 적용, 미스는 할인 없음
+      score += raw > 0 ? Math.round(raw * earningsDiscount) : raw;
     }
     const rev = fmp?.revSurprisePct;
     if (rev != null) {
       used.push('매출');
-      score += rev > 5 ? 15 : rev > 2 ? 10 : rev > 0 ? 5 : rev > -2 ? -5 : -12;
+      const raw = rev > 5 ? 15 : rev > 2 ? 10 : rev > 0 ? 5 : rev > -2 ? -5 : -12;
+      score += raw > 0 ? Math.round(raw * earningsDiscount) : raw;
     }
     if (guidancePct != null) {
       used.push('가이던스');
-      score += guidancePct > 5 ? 20 : guidancePct > 2 ? 12 : guidancePct > 0 ? 6
-             : guidancePct > -2 ? -6 : guidancePct > -5 ? -15 : -22;
+      const raw = guidancePct > 5 ? 20 : guidancePct > 2 ? 12 : guidancePct > 0 ? 6
+                : guidancePct > -2 ? -6 : guidancePct > -5 ? -15 : -22;
+      score += raw > 0 ? Math.round(raw * earningsDiscount) : raw;
     }
     if (growthLine) {
       used.push('성장추이');
@@ -826,17 +842,28 @@ function computeRuleScore({ source, fmp, momentum, valuationLine, growthLine, nl
   }
 
   // 공통 변수
-  const ret30 = momentum?.ret30;
-  if (ret30 != null) {
+  const ret30val = momentum?.ret30;
+  if (ret30val != null) {
     used.push('모멘텀');
-    score += ret30 >= 25 ? -15 : ret30 >= 15 ? -10 : ret30 >= 8 ? -5
-           : ret30 <= -15 ? 10 : ret30 <= -8 ? 6 : 0;
+    // 강화: 선반영 과열은 더 강한 패널티
+    score += ret30val >= 40 ? -25 : ret30val >= 30 ? -20 : ret30val >= 20 ? -14
+           : ret30val >= 10 ? -7  : ret30val <= -20 ? 12  : ret30val <= -10 ? 7 : 0;
   }
 
   if (valuationLine) {
     used.push('밸류에이션');
-    if (valuationLine.includes('극단적 고평가')) score -= 8;
-    else if (valuationLine.includes('주의')) score -= 4;
+    // P/E 실제 수치 기반 차등 패널티
+    const peM = valuationLine.match(/P\/E\s*([\d]+)x/);
+    const pe  = peM ? parseInt(peM[1]) : null;
+    if (pe != null) {
+      score += pe > 200 ? -25 : pe > 150 ? -20 : pe > 100 ? -14 : pe > 50 ? -6 : 0;
+    } else if (valuationLine.includes('극단적 고평가')) score -= 14;
+    else if (valuationLine.includes('주의')) score -= 6;
+
+    // 극단적 과열 + 극단적 고평가 동시 → 추가 패널티 (복합 리스크)
+    if (ret30val != null && ret30val >= 25 && pe != null && pe > 100) {
+      score -= 10;
+    }
   }
 
   if (nlp) {
