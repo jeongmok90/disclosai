@@ -618,7 +618,7 @@ async function fetchFredSeries(seriesId) {
   if (cached && Date.now() - cached.ts < FRED_SERIES_TTL) return cached.data;
   const { data } = await axios.get(
     `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${seriesId}`,
-    { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000, responseType: 'text' }
+    { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 45000, responseType: 'text' }
   );
   const series = [];
   for (const line of data.trim().split('\n').slice(1)) {
@@ -1555,4 +1555,17 @@ app.listen(PORT, () => {
   console.log(`   EDGAR:      ✅ 공개 API (키 불필요)`);
   console.log(`   대상기업:   🇰🇷 ${DART_TARGETS.length}개  🇺🇸 ${EDGAR_TARGETS.length}개`);
   console.log(`   FMP 캐시:   7일 TTL (분기 실적 주기, 배포해도 첫 분석 시 1회만 호출)\n`);
+
+  // FRED 시계열 사전 캐싱 (유사 공시 매크로 매칭용)
+  setTimeout(() => {
+    console.log('[FRED] 서버 시작 후 시계열 사전 캐싱 시작...');
+    Promise.allSettled([
+      fetchFredSeries('VIXCLS'),
+      fetchFredSeries('DGS10'),
+      fetchFredSeries('DEXKOUS'),
+    ]).then(results => {
+      const ok = results.filter(r => r.status === 'fulfilled').length;
+      console.log(`[FRED] 사전 캐싱 완료: ${ok}/3 성공`);
+    });
+  }, 3000); // 서버 안정화 후 3초 뒤 시작
 });
