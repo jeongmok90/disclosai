@@ -1345,16 +1345,11 @@ sentiment는 impact 분석의 요약 결론입니다 — impact가 "주가 상�
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
 
-      // ── 하이브리드 스코어: impact 텍스트 방향 분석(기반 ±25) + 규칙 조정값 ──
-      // AI의 sentiment 자체 판단 대신, impact 텍스트를 직접 분석해 방향 결정
-      const impactText = parsed.impact || '';
-      const POS_KR = ['긍정적', '상승', '호재', '매수', '개선', '성장', '기대', '상회', '서프라이즈', '강세', '확대', '호조', '수혜', '상향'];
-      const NEG_KR = ['부정적', '하락', '악재', '매도', '우려', '하회', '실망', '약세', '축소', '리스크', '손실', '부담', '하향', '감소'];
-      const posHits = POS_KR.filter(w => impactText.includes(w)).length;
-      const negHits = NEG_KR.filter(w => impactText.includes(w)).length;
-      const impactDirection = posHits > negHits ? 'positive' : negHits > posHits ? 'negative' : (parsed.sentiment || 'neutral');
+      // ── 하이브리드 스코어: AI sentiment(기반 ±35) + 규칙 조정값 ──
+      // AI가 impact 결론을 바탕으로 판단한 sentiment를 base로 사용
+      const impactDirection = parsed.sentiment || 'neutral';
       const aiBase = impactDirection === 'positive' ? 35 : impactDirection === 'negative' ? -35 : 0;
-      console.log(`[Impact NLP] ${company} pos=${posHits} neg=${negHits} → ${impactDirection}(${aiBase >= 0 ? '+' : ''}${aiBase})`);
+      console.log(`[AI Sentiment] ${company} → ${impactDirection}(${aiBase >= 0 ? '+' : ''}${aiBase})`);
 
       const guidancePct = typeof parsed.guidancePct === 'number' ? parsed.guidancePct : null;
       const ruleResult = computeRuleScore({
