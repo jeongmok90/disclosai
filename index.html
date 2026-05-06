@@ -655,6 +655,7 @@ async function generateSummary(filing) {
         id: filing.id || '',
         url: filing.url || '',
         ticker: filing.ticker || '',
+        market: filing.kosMarket || filing.market || '',
       }),
     });
     const data = await res.json();

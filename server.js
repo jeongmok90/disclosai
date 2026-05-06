@@ -714,23 +714,28 @@ async function fetchFmpData(ticker, filingDate) {
 // 0-b. 공시 전 30일 주가 모멘텀
 async function fetchMomentum30(ticker, market, filingDate) {
   try {
-    const isKorean = market === 'KOSPI' || market === 'KOSDAQ';
+    const isKorean = market === 'KOSPI' || market === 'KOSDAQ' || market === 'kr';
     const filing = new Date(filingDate + 'T00:00:00Z');
     const from   = new Date(filing.getTime() - 40 * 86400000).toISOString().slice(0, 10);
 
     let prices = [];
     if (isKorean) {
+      // 국내 주식: 네이버 차트
       const all = await fetchNaverChart(ticker, 100);
       prices = all.filter(p => p.date >= from && p.date <= filingDate);
     } else {
-      if (!process.env.TWELVEDATA_API_KEY) return null;
-      const { data } = await axios.get('https://api.twelvedata.com/time_series', {
-        params: { symbol: ticker, interval: '1day', start_date: from, end_date: filingDate,
-                  apikey: process.env.TWELVEDATA_API_KEY, format: 'JSON' },
-        timeout: 8000,
+      // 미국 주식: FMP 주가 히스토리 (Twelve Data 대체)
+      if (!process.env.FMP_API_KEY) return null;
+      const { data } = await axios.get(
+        `https://financialmodelingprep.com/api/v3/historical-price-full/${ticker}`, {
+        params: { from, to: filingDate, apikey: process.env.FMP_API_KEY },
+        timeout: 10000,
       });
-      if (data.status === 'error' || !Array.isArray(data.values)) return null;
-      prices = data.values.reverse().map(v => ({ date: v.datetime, close: parseFloat(v.close) }));
+      if (!data?.historical?.length) return null;
+      prices = data.historical
+        .filter(v => v.date >= from && v.date <= filingDate)
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map(v => ({ date: v.date, close: v.close }));
     }
 
     if (prices.length < 5) return null;
