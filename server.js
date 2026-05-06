@@ -1495,27 +1495,11 @@ app.get('/api/status', (_, res) => res.json({
   time:   new Date().toISOString(),
 }));
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log(`\n🚀 Context.ai 서버 실행 중 → http://localhost:${PORT}`);
   console.log(`   DART API:   ${process.env.DART_API_KEY ? '✅ 연결됨' : '❌ 키 없음'}`);
   console.log(`   Gemini AI:  ${process.env.GEMINI_API_KEY ? '✅ 연결됨' : '❌ 키 없음'}`);
   console.log(`   EDGAR:      ✅ 공개 API (키 불필요)`);
-  console.log(`   대상기업:   🇰🇷 ${DART_TARGETS.length}개  🇺🇸 ${EDGAR_TARGETS.length}개\n`);
-
-  // 서버 시작 시 미국 종목 FMP 데이터 미리 로드 (분기 데이터라 7일 캐시)
-  if (process.env.FMP_API_KEY) {
-    console.log('[FMP] 미국 종목 데이터 프리로드 시작...');
-    const today = new Date().toISOString().slice(0, 10);
-    let loaded = 0;
-    for (const t of EDGAR_TARGETS) {
-      try {
-        await fetchFmpData(t.ticker, today);
-        loaded++;
-        await new Promise(r => setTimeout(r, 300)); // 429 방지용 딜레이
-      } catch (e) {
-        console.warn(`[FMP] ${t.ticker} 프리로드 실패:`, e.message.slice(0, 40));
-      }
-    }
-    console.log(`[FMP] 프리로드 완료: ${loaded}/${EDGAR_TARGETS.length}개 종목`);
-  }
+  console.log(`   대상기업:   🇰🇷 ${DART_TARGETS.length}개  🇺🇸 ${EDGAR_TARGETS.length}개`);
+  console.log(`   FMP 캐시:   7일 TTL (분기 실적 주기, 배포해도 첫 분석 시 1회만 호출)\n`);
 });
