@@ -1111,7 +1111,25 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
     // AI 호출: Groq 우선 → Gemini fallback
     let raw;
 
-    // 1순위: Groq (llama-3.3-70b-versatile)
+    // 1순위: Gemini (2.0-flash → 1.5-flash)
+    if (!raw && genAI) {
+      for (const modelName of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
+        try {
+          const model = genAI.getGenerativeModel({ model: modelName });
+          const result = await model.generateContent(prompt);
+          raw = result.response.text();
+          if (raw) { console.log(`[AI] Gemini ${modelName} 사용`); break; }
+        } catch (e) {
+          if (modelName === 'gemini-1.5-flash') {
+            console.warn('[Gemini] 모든 모델 실패, Groq fallback 시도');
+          } else {
+            console.warn(`[Gemini] ${modelName} 실패, fallback 시도:`, e.message.slice(0, 60));
+          }
+        }
+      }
+    }
+
+    // 2순위: Groq (llama-3.3-70b-versatile) — Gemini 한도 초과 시 자동 전환
     if (!raw && process.env.GROQ_API_KEY) {
       for (const groqModel of ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']) {
         try {
@@ -1138,35 +1156,14 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
             }
           );
           raw = groqRes.data.choices?.[0]?.message?.content || '';
-          if (raw) { console.log(`[AI] Groq ${groqModel} 사용`); break; }
+          if (raw) { console.log(`[AI] Groq ${groqModel} 사용 (Gemini fallback)`); break; }
         } catch (e) {
           console.warn(`[Groq] ${groqModel} 실패:`, e.response?.data?.error?.message || e.message.slice(0, 80));
-          if (groqModel === 'llama-3.1-8b-instant') {
-            console.warn('[Groq] 모든 모델 실패, Gemini fallback 시도');
-          }
         }
       }
     }
 
-    // 2순위: Gemini (2.0-flash → 1.5-flash)
-    if (!raw && genAI) {
-      for (const modelName of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
-        try {
-          const model = genAI.getGenerativeModel({ model: modelName });
-          const result = await model.generateContent(prompt);
-          raw = result.response.text();
-          if (raw) { console.log(`[AI] Gemini ${modelName} 사용`); break; }
-        } catch (e) {
-          if (modelName === 'gemini-1.5-flash') {
-            console.warn('[Gemini] 모든 모델 실패');
-          } else {
-            console.warn(`[Gemini] ${modelName} 실패, fallback 시도:`, e.message.slice(0, 60));
-          }
-        }
-      }
-    }
-
-    if (!raw) throw new Error('모든 AI 서비스(Groq·Gemini) 호출 실패');
+    if (!raw) throw new Error('모든 AI 서비스(Gemini·Groq) 호출 실패');
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
 
     if (jsonMatch) {
