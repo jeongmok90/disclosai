@@ -950,10 +950,10 @@ const ANALYSIS_CACHE_TTL = 24 * 60 * 60 * 1000; // 24시간
 app.post('/api/analyze/summary', async (req, res) => {
   const { title, company, source, date, id, url } = req.body;
 
-  if (!genAI) {
+  if (!genAI && !process.env.GROQ_API_KEY) {
     return res.json({
       status: 'no_key',
-      summary: `[Gemini API 키 미설정] aistudio.google.com에서 무료 발급 후 .env에 입력하세요.`,
+      summary: `[AI API 키 미설정] console.groq.com 또는 aistudio.google.com에서 무료 발급 후 환경변수에 입력하세요.`,
       sentiment: 'neutral', score: 0, factors: [], impact: '',
     });
   }
@@ -1110,19 +1110,59 @@ summary에는 공시 원문에 명시된 수치와 사실만 기술합니다.
   "impact": "주가 영향 분석. 한국어."
 }`;
 
-    // gemini-2.0-flash 우선, 실패 시 gemini-1.5-flash fallback
+    // AI 호출: Groq 우선 → Gemini fallback
     let raw;
-    for (const modelName of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
-      try {
-        const model = genAI.getGenerativeModel({ model: modelName });
-        const result = await model.generateContent(prompt);
-        raw = result.response.text();
-        break;
-      } catch (e) {
-        if (modelName === 'gemini-1.5-flash') throw e; // 둘 다 실패 시 상위 catch로
-        console.warn(`[Gemini] ${modelName} 실패, fallback 시도:`, e.message.slice(0, 60));
+
+    // 1순위: Groq (llama-3.3-70b-versatile)
+    if (!raw && process.env.GROQ_API_KEY) {
+      for (const groqModel of ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']) {
+        try {
+          const groqRes = await axios.post(
+            'https://api.groq.com/openai/v1/chat/completions',
+            {
+              model: groqModel,
+              messages: [{ role: 'user', content: prompt }],
+              temperature: 0.3,
+              max_tokens: 1024,
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+                'Content-Type': 'application/json',
+              },
+              timeout: 30000,
+            }
+          );
+          raw = groqRes.data.choices?.[0]?.message?.content || '';
+          if (raw) { console.log(`[AI] Groq ${groqModel} 사용`); break; }
+        } catch (e) {
+          console.warn(`[Groq] ${groqModel} 실패:`, e.response?.data?.error?.message || e.message.slice(0, 80));
+          if (groqModel === 'llama-3.1-8b-instant') {
+            console.warn('[Groq] 모든 모델 실패, Gemini fallback 시도');
+          }
+        }
       }
     }
+
+    // 2순위: Gemini (2.0-flash → 1.5-flash)
+    if (!raw && genAI) {
+      for (const modelName of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
+        try {
+          const model = genAI.getGenerativeModel({ model: modelName });
+          const result = await model.generateContent(prompt);
+          raw = result.response.text();
+          if (raw) { console.log(`[AI] Gemini ${modelName} 사용`); break; }
+        } catch (e) {
+          if (modelName === 'gemini-1.5-flash') {
+            console.warn('[Gemini] 모든 모델 실패');
+          } else {
+            console.warn(`[Gemini] ${modelName} 실패, fallback 시도:`, e.message.slice(0, 60));
+          }
+        }
+      }
+    }
+
+    if (!raw) throw new Error('모든 AI 서비스(Groq·Gemini) 호출 실패');
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
 
     if (jsonMatch) {
@@ -1272,15 +1312,22 @@ app.get('/api/price-impact', async (req, res) => {
 
 // ── 서버 상태 확인 ────────────────────────────────────────────────────────
 app.get('/api/status', (_, res) => res.json({
-  dart: !!process.env.DART_API_KEY,
+  dart:   !!process.env.DART_API_KEY,
+  groq:   !!process.env.GROQ_API_KEY,
   gemini: !!process.env.GEMINI_API_KEY,
-  time: new Date().toISOString(),
+  ai:     !!(process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY),
+  time:   new Date().toISOString(),
 }));
 
 app.listen(PORT, () => {
+  const aiStatus = process.env.GROQ_API_KEY
+    ? `✅ Groq (llama-3.3-70b)${process.env.GEMINI_API_KEY ? ' + Gemini fallback' : ''}`
+    : process.env.GEMINI_API_KEY
+      ? '✅ Gemini (Groq 키 없음)'
+      : '❌ AI 키 없음';
   console.log(`\n🚀 Context.ai 서버 실행 중 → http://localhost:${PORT}`);
   console.log(`   DART API:   ${process.env.DART_API_KEY ? '✅ 연결됨' : '❌ 키 없음'}`);
-  console.log(`   Gemini AI:  ${process.env.GEMINI_API_KEY ? '✅ 연결됨' : '❌ 키 없음'}`);
+  console.log(`   AI Engine:  ${aiStatus}`);
   console.log(`   EDGAR:      ✅ 공개 API (키 불필요)`);
   console.log(`   대상기업:   🇰🇷 ${DART_TARGETS.length}개  🇺🇸 ${EDGAR_TARGETS.length}개\n`);
 });
