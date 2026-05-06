@@ -225,6 +225,27 @@
     .pag-btn:disabled { opacity: .4; cursor: default; }
     .pag-ellipsis { font-size: 13px; color: var(--muted); padding: 0 2px; }
 
+    /* 관심종목 ★ 버튼 */
+    .watch-btn { background: none; border: none; cursor: pointer; font-size: 16px; padding: 4px 6px; border-radius: 6px; line-height: 1; transition: transform .15s; flex-shrink: 0; }
+    .watch-btn:hover { transform: scale(1.2); }
+    .watch-btn.active { color: #f59e0b; }
+
+    /* 사이드바 관심종목 아이템 */
+    .watchlist-item { width: 100%; display: flex; align-items: center; padding: 8px 12px; border-radius: 8px; background: transparent; color: #94a3b8; cursor: pointer; font-size: 13px; font-weight: 500; margin-bottom: 2px; transition: background .15s, color .15s; gap: 8px; border: none; text-align: left; }
+    .watchlist-item:hover { background: var(--sidebar-hover); color: #e2e8f0; }
+    .watchlist-item.active { background: var(--accent); color: white; }
+    .watchlist-item .wi-name { flex: 1; }
+    .watchlist-item .wi-badge { background: #dc2626; color: white; border-radius: 10px; padding: 1px 6px; font-size: 10px; font-weight: 700; display: none; }
+    .watchlist-item .wi-badge.show { display: inline-block; }
+    .watchlist-item .wi-remove { margin-left: auto; opacity: 0; font-size: 14px; padding: 0 2px; transition: opacity .15s; color: #64748b; }
+    .watchlist-item:hover .wi-remove { opacity: 1; }
+    .watchlist-empty { color: #475569; font-size: 12px; padding: 6px 12px; line-height: 1.5; }
+
+    /* 전체 관심종목 보기 버튼 */
+    .watchlist-all-btn { width: 100%; text-align: left; padding: 8px 12px; border: none; border-radius: 8px; background: transparent; color: #94a3b8; cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; transition: background .15s, color .15s; margin-bottom: 6px; }
+    .watchlist-all-btn:hover { background: var(--sidebar-hover); color: #e2e8f0; }
+    .watchlist-all-btn.active { background: #1e3a5f; color: #60a5fa; }
+
     @media(max-width:900px){aside{display:none}.stats-row{grid-template-columns:repeat(2,1fr)}.hist-grid{grid-template-columns:1fr}}
   </style>
 </head>
@@ -286,10 +307,9 @@
     </div>
     <hr class="sep">
     <div class="sidebar-section">
-      <div class="sidebar-title">관심 종목</div>
-      <button class="filter-btn" onclick="filterCompany('삼성전자',this)">⭐ 삼성전자</button>
-      <button class="filter-btn" onclick="filterCompany('NVIDIA',this)">⭐ NVIDIA</button>
-      <button class="filter-btn" onclick="filterCompany('SK하이닉스',this)">⭐ SK하이닉스</button>
+      <div class="sidebar-title">관심 종목 <span id="watchlist-new-total" style="display:none;background:#dc2626;color:white;border-radius:8px;padding:1px 6px;font-size:10px;font-weight:700;margin-left:4px"></span></div>
+      <button class="watchlist-all-btn" id="watchlist-all-btn" onclick="filterWatchlist(this)">⭐ 관심종목 전체보기</button>
+      <div id="watchlist-sidebar"></div>
     </div>
   </aside>
 
@@ -513,8 +533,139 @@ const DEMO_FILINGS = [
 // ── 상태 ──────────────────────────────────────────────────────────────────
 let allFilings = [...DEMO_FILINGS];
 let activeMarket = 'all', activeSentiment = null, activeType = null, activeCompany = null, searchQuery = '';
+let activeWatchlist = false;
 const canvasRegistry = {};
 let isLiveMode = false;
+
+// ── 관심종목 ─────────────────────────────────────────────────────────────────
+let watchlist = JSON.parse(localStorage.getItem('watchlist') || '[]');
+// 뱃지: 마지막 확인 이후 새로 올라온 공시 (회사별)
+let watchlistNewCounts = JSON.parse(localStorage.getItem('watchlistNew') || '{}');
+let watchlistLastSeen = JSON.parse(localStorage.getItem('watchlistLastSeen') || '{}');
+
+function saveWatchlist() {
+  localStorage.setItem('watchlist', JSON.stringify(watchlist));
+  localStorage.setItem('watchlistNew', JSON.stringify(watchlistNewCounts));
+  localStorage.setItem('watchlistLastSeen', JSON.stringify(watchlistLastSeen));
+}
+
+function isWatched(company) { return watchlist.includes(company); }
+
+function toggleWatch(company, filingId) {
+  if (isWatched(company)) {
+    watchlist = watchlist.filter(c => c !== company);
+    delete watchlistNewCounts[company];
+    delete watchlistLastSeen[company];
+    showToast(`${company} 관심종목에서 제거됐습니다`);
+  } else {
+    watchlist.push(company);
+    // 현재 최신 공시일 기록 (이후 새 공시 감지용)
+    const latest = allFilings.filter(f => f.company === company && !f._loading)
+                             .sort((a,b) => String(b.date).localeCompare(String(a.date)))[0];
+    if (latest) watchlistLastSeen[company] = latest.date || '';
+    watchlistNewCounts[company] = 0;
+    showToast(`⭐ ${company} 관심종목에 추가됐습니다`);
+  }
+  saveWatchlist();
+  renderWatchlistSidebar();
+  renderFeed(); // ★ 버튼 상태 갱신
+}
+
+function removeWatchItem(company, e) {
+  e.stopPropagation();
+  watchlist = watchlist.filter(c => c !== company);
+  delete watchlistNewCounts[company];
+  delete watchlistLastSeen[company];
+  if (activeWatchlist && watchlist.length === 0) {
+    activeWatchlist = false;
+    document.getElementById('watchlist-all-btn')?.classList.remove('active');
+  }
+  saveWatchlist();
+  renderWatchlistSidebar();
+  renderFeed();
+  showToast(`${company} 관심종목에서 제거됐습니다`);
+}
+
+function filterWatchlist(btn) {
+  activeWatchlist = !activeWatchlist;
+  btn.classList.toggle('active', activeWatchlist);
+  // 관심종목 보기 클릭 시 새 공시 뱃지 초기화
+  if (activeWatchlist) {
+    watchlist.forEach(c => { watchlistNewCounts[c] = 0; });
+    saveWatchlist();
+    renderWatchlistSidebar();
+    updateWatchlistTotalBadge();
+  }
+  // 다른 필터 해제
+  activeCompany = null;
+  document.querySelectorAll('.watchlist-item').forEach(el => el.classList.remove('active'));
+  renderFeed();
+}
+
+function filterWatchCompany(company, el) {
+  if (activeCompany === company) {
+    activeCompany = null;
+    el.classList.remove('active');
+  } else {
+    activeCompany = company;
+    document.querySelectorAll('.watchlist-item').forEach(e => e.classList.remove('active'));
+    el.classList.add('active');
+    // 해당 회사 뱃지 초기화
+    watchlistNewCounts[company] = 0;
+    el.querySelector('.wi-badge')?.classList.remove('show');
+    saveWatchlist();
+    updateWatchlistTotalBadge();
+  }
+  activeWatchlist = false;
+  document.getElementById('watchlist-all-btn')?.classList.remove('active');
+  renderFeed();
+}
+
+function renderWatchlistSidebar() {
+  const el = document.getElementById('watchlist-sidebar');
+  if (!el) return;
+  if (watchlist.length === 0) {
+    el.innerHTML = '<div class="watchlist-empty">공시 카드의 ☆ 버튼으로<br>관심종목을 추가하세요</div>';
+    return;
+  }
+  el.innerHTML = watchlist.map(company => {
+    const cnt = watchlistNewCounts[company] || 0;
+    return `<button class="watchlist-item${activeCompany===company?' active':''}" onclick="filterWatchCompany('${company}',this)">
+      <span>⭐</span>
+      <span class="wi-name">${company}</span>
+      <span class="wi-badge${cnt>0?' show':''}">${cnt > 9 ? '9+' : cnt}</span>
+      <span class="wi-remove" onclick="removeWatchItem('${company}',event)" title="제거">✕</span>
+    </button>`;
+  }).join('');
+  updateWatchlistTotalBadge();
+}
+
+function updateWatchlistTotalBadge() {
+  const total = Object.values(watchlistNewCounts).reduce((s, v) => s + v, 0);
+  const badge = document.getElementById('watchlist-new-total');
+  if (!badge) return;
+  if (total > 0) { badge.textContent = total > 9 ? '9+' : total; badge.style.display = 'inline-block'; }
+  else { badge.style.display = 'none'; }
+}
+
+// 새 공시 감지 (loadRealFilings 이후 호출)
+function checkWatchlistNewFilings() {
+  let changed = false;
+  watchlist.forEach(company => {
+    const lastSeen = watchlistLastSeen[company] || '';
+    const newFilings = allFilings.filter(f =>
+      f.company === company && !f._loading &&
+      String(f.date || '') > lastSeen
+    );
+    if (newFilings.length > 0) {
+      watchlistNewCounts[company] = (watchlistNewCounts[company] || 0) + newFilings.length;
+      const latest = newFilings.sort((a,b) => String(b.date).localeCompare(String(a.date)))[0];
+      watchlistLastSeen[company] = latest.date || '';
+      changed = true;
+    }
+  });
+  if (changed) { saveWatchlist(); renderWatchlistSidebar(); updateWatchlistTotalBadge(); }
+}
 let isPro = true; // MVP: PRO 기본 활성화
 let currentPage = 1;
 const ITEMS_PER_PAGE = 10;
@@ -640,6 +791,7 @@ async function loadRealFilings(status) {
   renderFeed();
   updateStats();
   schedulePageSummaries();
+  checkWatchlistNewFilings();
 }
 
 async function generateSummary(filing) {
@@ -809,9 +961,12 @@ function renderCard(f) {
         </div>
         <div class="card-title">${f.title}</div>
       </div>
-      <div class="sentiment-pill ${sent}">
-        <span class="score">${sent==='positive'?'↑':sent==='negative'?'↓':sent==='neutral'?'→':'—'}</span>
-        <span>${scoreAbs}</span>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+        <button class="watch-btn ${isWatched(f.company)?'active':''}" id="watch-${f.id}" onclick="event.stopPropagation();toggleWatch('${f.company}','${f.id}')" title="관심종목 추가/제거">${isWatched(f.company)?'★':'☆'}</button>
+        <div class="sentiment-pill ${sent}">
+          <span class="score">${sent==='positive'?'↑':sent==='negative'?'↓':sent==='neutral'?'→':'—'}</span>
+          <span>${scoreAbs}</span>
+        </div>
       </div>
     </div>
     <button class="expand-hint" onclick="toggleCard('${f.id}')">
@@ -1120,7 +1275,8 @@ function drawSparkline(canvasId, f) {
 function getFiltered() {
   return allFilings.filter(f => {
     if (f._loading) return false;
-    if (activeMarket !== 'all' && f.market !== activeMarket) return false;
+    if (activeWatchlist && !watchlist.includes(f.company)) return false;
+    if (!activeWatchlist && activeMarket !== 'all' && f.market !== activeMarket) return false;
     if (activeSentiment && f.sentiment !== activeSentiment) return false;
     if (activeType && f.type !== activeType) return false;
     if (activeCompany && f.company !== activeCompany) return false;
@@ -1257,6 +1413,8 @@ allFilings = [...DEMO_FILINGS];
 document.body.classList.add('pro-active');
 const _proBtn = document.getElementById('headerProBtn');
 if (_proBtn) { _proBtn.textContent = '✓ PRO 이용 중'; _proBtn.style.background = '#16a34a'; _proBtn.style.boxShadow = '0 2px 8px rgba(22,163,74,.35)'; _proBtn.onclick = null; }
+renderWatchlistSidebar();
+updateWatchlistTotalBadge();
 renderFeed();
 updateStats();
 checkApiStatus();
