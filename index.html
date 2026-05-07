@@ -80,9 +80,12 @@
     .feed { display: flex; flex-direction: column; gap: 16px; }
     .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; transition: transform .15s, box-shadow .15s; border: 1.5px solid transparent; }
     .card:hover { transform: translateY(-1px); box-shadow: 0 4px 24px rgba(0,0,0,.1); }
-    .card.positive { border-color: #bbf7d0; }
-    .card.negative { border-color: #fecaca; }
-    .card.neutral { border-color: #fde68a; }
+    .card.positive { border-color: transparent; }
+    .card.negative { border-color: transparent; }
+    .card.neutral { border-color: transparent; }
+    body.pro-active .card.positive { border-color: #bbf7d0; }
+    body.pro-active .card.negative { border-color: #fecaca; }
+    body.pro-active .card.neutral { border-color: #fde68a; }
     .card.loading-card { border-color: var(--border); animation: cardPulse 1.5s ease-in-out infinite; }
     @keyframes cardPulse { 0%,100%{opacity:1} 50%{opacity:.6} }
 
@@ -971,10 +974,10 @@ function renderCard(f) {
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         <button class="watch-btn ${isWatched(f.company)?'active':''}" id="watch-${f.id}" onclick="event.stopPropagation();toggleWatch('${f.company}','${f.id}')" title="관심종목 추가/제거">${isWatched(f.company)?'★':'☆'}</button>
-        ${isPro ? `<div class="sentiment-pill ${sent}">
-          <span class="score">${sent==='positive'?'↑':sent==='negative'?'↓':sent==='neutral'?'→':'—'}</span>
-          <span>${sent==='positive'?'긍정':sent==='negative'?'부정':sent==='neutral'?'중립':'분석 중'}</span>
-        </div>` : ''}
+        <div class="sentiment-pill ${isPro ? sent : 'unknown'}" title="${isPro ? '' : 'PRO 활성화 후 확인 가능'}">
+          <span class="score">${isPro ? (sent==='positive'?'↑':sent==='negative'?'↓':sent==='neutral'?'→':'—') : '🔒'}</span>
+          <span>${isPro ? (sent==='positive'?'긍정':sent==='negative'?'부정':sent==='neutral'?'중립':'분석 중') : 'PRO'}</span>
+        </div>
       </div>
     </div>
     <button class="expand-hint" onclick="toggleCard('${f.id}')">
