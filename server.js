@@ -29,7 +29,7 @@ const DART_TARGETS = [
   { corp_code: '00688996', stock_code: '105560', name: 'KB금융',         group: 'largecap' },
   // 수주/공급계약 빈번 산업 상위 10
   { corp_code: '00126566', stock_code: '012450', name: '한화에어로스페이스', group: 'order' },
-  { corp_code: '00503668', stock_code: '079550', name: 'LIG넥스원',      group: 'order' },
+  { corp_code: '00503668', stock_code: '079550', name: 'LIG디펜스앤에어로스페이스', group: 'order' },
   { corp_code: '00309503', stock_code: '047810', name: '한국항공우주',   group: 'order' },
   { corp_code: '01390344', stock_code: '329180', name: 'HD현대중공업',   group: 'order' },
   { corp_code: '00126478', stock_code: '010140', name: '삼성중공업',     group: 'order' },
