@@ -971,10 +971,10 @@ function renderCard(f) {
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         <button class="watch-btn ${isWatched(f.company)?'active':''}" id="watch-${f.id}" onclick="event.stopPropagation();toggleWatch('${f.company}','${f.id}')" title="관심종목 추가/제거">${isWatched(f.company)?'★':'☆'}</button>
-        <div class="sentiment-pill ${sent}">
+        ${isPro ? `<div class="sentiment-pill ${sent}">
           <span class="score">${sent==='positive'?'↑':sent==='negative'?'↓':sent==='neutral'?'→':'—'}</span>
           <span>${sent==='positive'?'긍정':sent==='negative'?'부정':sent==='neutral'?'중립':'분석 중'}</span>
-        </div>
+        </div>` : ''}
       </div>
     </div>
     <button class="expand-hint" onclick="toggleCard('${f.id}')">
