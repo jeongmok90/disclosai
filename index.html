@@ -276,7 +276,7 @@
       <div class="dot"></div><span id="apiStatusText">데모 모드</span>
     </div>
     <div class="badge-live">LIVE</div>
-    <button id="headerProBtn" class="upgrade-btn" style="font-size:12px;padding:7px 14px;" onclick="activatePro()">⚡ PRO 활성화</button>
+    <button id="headerProBtn" class="upgrade-btn" style="font-size:12px;padding:7px 14px;" onclick="openModal()">⚡ PRO 활성화</button>
   </div>
 </header>
 
@@ -666,7 +666,7 @@ function checkWatchlistNewFilings() {
   });
   if (changed) { saveWatchlist(); renderWatchlistSidebar(); updateWatchlistTotalBadge(); }
 }
-let isPro = true; // MVP: PRO 기본 활성화
+let isPro = localStorage.getItem('disclosai_pro') === '1';
 let currentPage = 1;
 const ITEMS_PER_PAGE = 10;
 let _summaryTimers = [];
@@ -1417,10 +1417,12 @@ document.getElementById('modal').addEventListener('click', e => { if(e.target===
 
 // ── 초기화 ────────────────────────────────────────────────────────────────
 allFilings = [...DEMO_FILINGS];
-// MVP: PRO 항상 활성화
-document.body.classList.add('pro-active');
-const _proBtn = document.getElementById('headerProBtn');
-if (_proBtn) { _proBtn.textContent = '✓ PRO 이용 중'; _proBtn.style.background = '#16a34a'; _proBtn.style.boxShadow = '0 2px 8px rgba(22,163,74,.35)'; _proBtn.onclick = null; }
+// PRO 상태 복원
+if (isPro) {
+  document.body.classList.add('pro-active');
+  const _proBtn = document.getElementById('headerProBtn');
+  if (_proBtn) { _proBtn.textContent = '✓ PRO 이용 중'; _proBtn.style.background = '#16a34a'; _proBtn.style.boxShadow = '0 2px 8px rgba(22,163,74,.35)'; _proBtn.onclick = null; }
+}
 renderWatchlistSidebar();
 updateWatchlistTotalBadge();
 renderFeed();
