@@ -936,8 +936,16 @@ function renderCard(f) {
         }).join('');
 
   // ── 영향 분석 HTML (프리미엄) ──
+  const scoreLabel = f.score != null
+    ? `<span style="font-size:13px;font-weight:700;margin-left:8px;color:${sent==='positive'?'var(--positive)':sent==='negative'?'var(--negative)':'var(--neutral)'}">
+        ${f.score > 0 ? '+' : ''}${f.score}점
+      </span>` : '';
   const impactHTML = f.impact
-    ? `<div class="impact-box ${sent}">${f.impact}<div class="impact-factors">${(f.factors||[]).map(x=>`<span class="factor-chip">${x}</span>`).join('')}</div></div>`
+    ? `<div class="impact-box ${sent}">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12px;font-weight:700;color:var(--muted)">
+          주가 영향 점수${scoreLabel}
+        </div>
+        ${f.impact}<div class="impact-factors">${(f.factors||[]).map(x=>`<span class="factor-chip">${x}</span>`).join('')}</div></div>`
     : `<div class="impact-box neutral" style="color:var(--muted);font-style:italic">AI 영향 분석 생성 중...</div>`;
 
 
@@ -965,7 +973,7 @@ function renderCard(f) {
         <button class="watch-btn ${isWatched(f.company)?'active':''}" id="watch-${f.id}" onclick="event.stopPropagation();toggleWatch('${f.company}','${f.id}')" title="관심종목 추가/제거">${isWatched(f.company)?'★':'☆'}</button>
         <div class="sentiment-pill ${sent}">
           <span class="score">${sent==='positive'?'↑':sent==='negative'?'↓':sent==='neutral'?'→':'—'}</span>
-          <span>${scoreAbs}</span>
+          <span>${sent==='positive'?'긍정':sent==='negative'?'부정':sent==='neutral'?'중립':'분석 중'}</span>
         </div>
       </div>
     </div>
